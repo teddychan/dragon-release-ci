@@ -7,8 +7,8 @@ name: Release macOS (shared)
 # Build, sign (Developer ID + hardened runtime), notarize, staple, and publish
 # the app whenever the caller is triggered by a v* tag. Also publishes the
 # EdDSA-signed Sparkle appcast to the marketing site (path-scoped per app) and
-# bumps the Homebrew cask. The private clipmenu-2-premium repo is NOT a caller —
-# it builds only the Mac App Store variant on its own self-hosted runner.
+# bumps the Homebrew cask. The Mac App Store build is NOT handled here — clipmenu-2
+# builds its sandboxed MAS variant in its own release-mas.yml (also GitHub-hosted).
 #
 # Required secrets (declared below; pass via `secrets: inherit`):
 #   DEVELOPER_ID_CERT_P12_BASE64  base64 of the "Developer ID Application" .p12
