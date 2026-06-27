@@ -17,8 +17,8 @@ name: Release macOS (shared)
 #   NOTARY_KEY_ID                 the API key's Key ID
 #   NOTARY_ISSUER_ID              the API key's Issuer ID
 # Optional secrets:
-#   PROVISIONING_PROFILE_BASE64   base64 provisioning profile (xcodebuild only)
-#   APPLE_TEAM_ID                 Apple developer team id (xcodebuild only)
+#   PROVISIONING_PROFILE_BASE64   base64 provisioning profile (xcodebuild, and swiftpm when swiftpm_icloud_entitlements_path is set)
+#   APPLE_TEAM_ID                 Apple developer team id (xcodebuild, and swiftpm iCloud signing)
 #   PUBLIC_RELEASE_TOKEN          PAT with write to www.dragonapp.com + homebrew-tap
 #   SPARKLE_EDDSA_PRIVATE_KEY     the shared Sparkle EdDSA private key
 
@@ -61,6 +61,16 @@ on:
         type: boolean
         required: false
         default: false
+      swiftpm_runner:
+        description: 'GitHub-hosted runner image for the swiftpm build. Use macos-26 for apps that target the macOS 26 SDK (clipmenu-2). Default macos-15.'
+        type: string
+        required: false
+        default: 'macos-15'
+      swiftpm_icloud_entitlements_path:
+        description: 'Entitlements file (repo-root-relative; __TEAM_ID__ substituted) to sign the swiftpm app with, embedding the PROVISIONING_PROFILE_BASE64 profile for iCloud. Empty = local-only (no iCloud).'
+        type: string
+        required: false
+        default: ''
 
       # xcodebuild front-end (ice-2) -----------------------------------------
       xcode_project:
@@ -162,8 +172,9 @@ jobs:
     # GitHub-hosted macOS runner. Public repos get free Actions minutes, so no
     # self-hosted runner is needed. The image MUST ship an Xcode new enough for
     # each app's deployment target; the "Select Xcode" step picks the newest
-    # installed Xcode. Bump to `macos-26` if a build fails on the SDK.
-    runs-on: macos-15
+    # installed Xcode. Default macos-15; callers targeting the macOS 26 SDK
+    # (clipmenu-2) pass swiftpm_runner: macos-26.
+    runs-on: ${{ inputs.swiftpm_runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -291,11 +302,33 @@ jobs:
 
       - name: Sign (Developer ID + hardened runtime) [swiftpm]
         if: ${{ inputs.build_kind == 'swiftpm' }}
+        env:
+          PROVISIONING_PROFILE_BASE64: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ICLOUD_ENTITLEMENTS_PATH: ${{ inputs.swiftpm_icloud_entitlements_path }}
         run: |
           set -euo pipefail
-          # The free build is local-only (no iCloud entitlements / provisioning
-          # profile — those are the Mac App Store premium variant). Sign nested
-          # bundles inside-out, then seal the main bundle, all with hardened runtime.
+          # By default the build is local-only. When the caller passes
+          # swiftpm_icloud_entitlements_path AND the PROVISIONING_PROFILE_BASE64 secret
+          # is present, embed the provisioning profile and sign the app with those
+          # entitlements so iCloud (CloudKit) works in the direct/Homebrew build
+          # (clipmenu-2). Otherwise sign local-only — no iCloud (ice-2 / keykey).
+          ENTITLEMENTS_ARGS=()
+          if [ -n "${ICLOUD_ENTITLEMENTS_PATH}" ] && [ -n "${PROVISIONING_PROFILE_BASE64:-}" ]; then
+            if [ -z "${APPLE_TEAM_ID:-}" ]; then
+              echo "::error::swiftpm_icloud_entitlements_path is set and PROVISIONING_PROFILE_BASE64 is present, but the APPLE_TEAM_ID secret is missing." >&2
+              exit 1
+            fi
+            echo "Embedding provisioning profile + iCloud entitlements ($ICLOUD_ENTITLEMENTS_PATH)"
+            echo "$PROVISIONING_PROFILE_BASE64" | base64 --decode > "$APP/Contents/embedded.provisionprofile"
+            ENT="$RUNNER_TEMP/swiftpm-icloud.entitlements"
+            sed "s/__TEAM_ID__/${APPLE_TEAM_ID}/g" "$GITHUB_WORKSPACE/${ICLOUD_ENTITLEMENTS_PATH}" > "$ENT"
+            ENTITLEMENTS_ARGS=(--entitlements "$ENT")
+          else
+            echo "Signing local-only (no iCloud entitlements / provisioning profile)."
+          fi
+
+          # Sign nested bundles inside-out, then seal the main bundle, all hardened.
           RESOURCE_BUNDLE="$APP/Contents/Resources/ClipMenu_ClipMenu.bundle"
           if [ -d "$RESOURCE_BUNDLE" ]; then
             codesign --force --options runtime --timestamp \
@@ -317,6 +350,7 @@ jobs:
           fi
 
           codesign --force --options runtime --timestamp \
+            ${ENTITLEMENTS_ARGS[@]+"${ENTITLEMENTS_ARGS[@]}"} \
             --sign "$SIGN_IDENTITY" --keychain "$KEYCHAIN_PATH" "$APP"
           codesign --verify --strict --verbose=2 "$APP"
 
