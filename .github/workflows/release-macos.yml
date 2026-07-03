@@ -177,6 +177,10 @@ jobs:
     runs-on: ${{ inputs.swiftpm_runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so `git rev-list --count HEAD` yields a real, monotonic
+          # build number (a shallow clone would always report 1).
+          fetch-depth: 0
 
       - name: Select Xcode
         run: |
@@ -275,6 +279,12 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :CFBundleName ${APP_NAME}" "$APP/Contents/Info.plist"
           /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string ${APP_NAME}" "$APP/Contents/Info.plist" 2>/dev/null \
             || /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName ${APP_NAME}" "$APP/Contents/Info.plist"
+          # Build number = git commit count (monotonic). The About pane renders it
+          # as "Version X (build)" whenever it differs from the marketing version.
+          # Requires the full-history checkout above; falls back to the marketing
+          # version if git height is somehow unavailable.
+          BUILD="$(git rev-list --count HEAD 2>/dev/null || echo "$VERSION")"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUILD}" "$APP/Contents/Info.plist"
           cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
           RESOURCE_BUNDLE="ClipMenu_ClipMenu.bundle"
