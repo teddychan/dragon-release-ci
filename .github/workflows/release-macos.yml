@@ -574,13 +574,22 @@ jobs:
       - name: Publish appcast (Sparkle auto-update)
         env:
           PUBLIC_RELEASE_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
+          GITHUB_TOKEN_SELF: ${{ github.token }}
           SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
         run: |
           set -euo pipefail
           SITE_REPO="${{ inputs.appcast_repo }}"
           APP_SLUG="${{ inputs.app_slug }}"
-          if [ -z "${PUBLIC_RELEASE_TOKEN:-}" ] || [ -z "${SPARKLE_EDDSA_PRIVATE_KEY:-}" ]; then
-            echo "::warning::PUBLIC_RELEASE_TOKEN and/or SPARKLE_EDDSA_PRIVATE_KEY not set — skipping appcast."
+          # Publishing to this very repo (self-hosted appcast, e.g. dragon-sample-app) uses the
+          # built-in GITHUB_TOKEN, which already has contents:write here — no PAT needed. A
+          # different repo (the marketing site) needs the cross-repo PUBLIC_RELEASE_TOKEN.
+          if [ "$SITE_REPO" = "$GITHUB_REPOSITORY" ]; then
+            APPCAST_TOKEN="$GITHUB_TOKEN_SELF"
+          else
+            APPCAST_TOKEN="${PUBLIC_RELEASE_TOKEN:-}"
+          fi
+          if [ -z "${APPCAST_TOKEN:-}" ] || [ -z "${SPARKLE_EDDSA_PRIVATE_KEY:-}" ]; then
+            echo "::warning::appcast token (PUBLIC_RELEASE_TOKEN cross-repo, else GITHUB_TOKEN) and/or SPARKLE_EDDSA_PRIVATE_KEY not set — skipping appcast."
             exit 0
           fi
           # Locate generate_appcast per build front-end.
@@ -623,7 +632,7 @@ jobs:
             fi
           fi
           PAGES="$RUNNER_TEMP/pages"
-          REMOTE="https://x-access-token:${PUBLIC_RELEASE_TOKEN}@github.com/${SITE_REPO}.git"
+          REMOTE="https://x-access-token:${APPCAST_TOKEN}@github.com/${SITE_REPO}.git"
           git clone --depth 1 "$REMOTE" "$PAGES"
           mkdir -p "$PAGES/docs/${APP_SLUG}"
           cp "$OUT" "$PAGES/docs/${APP_SLUG}/appcast.xml"
