@@ -207,7 +207,10 @@ jobs:
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
           echo "TAG=${TAG}" >> "$GITHUB_ENV"
-          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+          # Strip everything up to and including the last "v" so both "vX.Y.Z" (clipmenu,
+          # ice, keykey) and app-prefixed tags like "sample-vX.Y.Z" (dragon-sample-app,
+          # sharing a repo's v* library tags) resolve to the bare X.Y.Z version.
+          echo "VERSION=${TAG##*v}" >> "$GITHUB_ENV"
 
       # The Developer ID cert import has no dependency on the app existing, and
       # xcodebuild signs INSIDE the archive — it needs the keychain/identity
