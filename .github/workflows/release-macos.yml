@@ -138,6 +138,11 @@ on:
         default: ''
 
       # appcast --------------------------------------------------------------
+      appcast_repo:
+        description: 'Repo hosting the Sparkle appcast at docs/<app_slug>/appcast.xml. Default the marketing site; a self-contained app (e.g. dragon-sample-app) can point this at its own repo so nothing is published to the marketing site.'
+        type: string
+        required: false
+        default: 'teddychan/www.dragonapp.com'
       generate_appcast_glob:
         description: 'find expression locating generate_appcast. One of: swiftpm | xcodebuild | keykey-cache'
         type: string
@@ -572,7 +577,7 @@ jobs:
           SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
         run: |
           set -euo pipefail
-          SITE_REPO="teddychan/www.dragonapp.com"
+          SITE_REPO="${{ inputs.appcast_repo }}"
           APP_SLUG="${{ inputs.app_slug }}"
           if [ -z "${PUBLIC_RELEASE_TOKEN:-}" ] || [ -z "${SPARKLE_EDDSA_PRIVATE_KEY:-}" ]; then
             echo "::warning::PUBLIC_RELEASE_TOKEN and/or SPARKLE_EDDSA_PRIVATE_KEY not set — skipping appcast."
