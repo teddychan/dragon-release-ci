@@ -71,6 +71,16 @@ on:
         type: string
         required: false
         default: ''
+      swiftpm_product_name:
+        description: 'SwiftPM product/executable name copied into Contents/MacOS/ and set as CFBundleExecutable. Default ClipMenu.'
+        type: string
+        required: false
+        default: 'ClipMenu'
+      swiftpm_app_name_template:
+        description: 'Template for the .app filename + CFBundleName/CFBundleDisplayName. Tokens {MAJOR} {VERSION}. Default "ClipMenu {MAJOR}".'
+        type: string
+        required: false
+        default: 'ClipMenu {MAJOR}'
 
       # xcodebuild front-end (ice-2) -----------------------------------------
       xcode_project:
@@ -262,20 +272,28 @@ jobs:
         working-directory: ${{ inputs.swiftpm_working_directory }}
         env:
           CLIPMENU_SPARKLE: ${{ inputs.swiftpm_sparkle && '1' || '' }}
+          SWIFTPM_PRODUCT_NAME: ${{ inputs.swiftpm_product_name }}
+          SWIFTPM_APP_NAME_TEMPLATE: ${{ inputs.swiftpm_app_name_template }}
         run: |
           set -euo pipefail
-          # Mirror scripts/run.sh's bundle assembly (without launching). The
-          # display name follows the major version: 2.x -> "ClipMenu 2".
+          # Mirror scripts/run.sh's bundle assembly (without launching). APP_NAME is
+          # rendered from swiftpm_app_name_template ({MAJOR}/{VERSION} substituted);
+          # for ClipMenu that is "ClipMenu 2".
           BIN_PATH="$(swift build -c release --show-bin-path)"
           VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)"
           MAJOR="${VERSION%%.*}"
-          APP_NAME="ClipMenu ${MAJOR}"
+          PRODUCT="$SWIFTPM_PRODUCT_NAME"
+          APP_NAME="$SWIFTPM_APP_NAME_TEMPLATE"
+          APP_NAME="${APP_NAME//\{MAJOR\}/$MAJOR}"
+          APP_NAME="${APP_NAME//\{VERSION\}/$VERSION}"
           APP="${PWD}/.build/${APP_NAME}.app"
 
           rm -rf "$APP"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-          cp "$BIN_PATH/ClipMenu" "$APP/Contents/MacOS/ClipMenu"
+          cp "$BIN_PATH/$PRODUCT" "$APP/Contents/MacOS/$PRODUCT"
           cp Info.plist "$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable ${PRODUCT}" "$APP/Contents/Info.plist" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string ${PRODUCT}" "$APP/Contents/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleName ${APP_NAME}" "$APP/Contents/Info.plist"
           /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string ${APP_NAME}" "$APP/Contents/Info.plist" 2>/dev/null \
             || /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName ${APP_NAME}" "$APP/Contents/Info.plist"
@@ -285,7 +303,9 @@ jobs:
           # version if git height is somehow unavailable.
           BUILD="$(git rev-list --count HEAD 2>/dev/null || echo "$VERSION")"
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUILD}" "$APP/Contents/Info.plist"
-          cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+          # App icon is optional: ClipMenu ships AppIcon.icns; the sample app defers
+          # a custom icon and falls back to the system default.
+          [ -f AppIcon.icns ] && cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns" || true
 
           # Copy every SwiftPM resource bundle (ClipMenu_ClipMenu.bundle, plus any
           # dependency's, e.g. DragonKit_DragonKit.bundle with the kit's localized
