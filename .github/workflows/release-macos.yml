@@ -287,11 +287,15 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUILD}" "$APP/Contents/Info.plist"
           cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
-          RESOURCE_BUNDLE="ClipMenu_ClipMenu.bundle"
-          if [ -d "$BIN_PATH/$RESOURCE_BUNDLE" ]; then
-            cp -R "$BIN_PATH/$RESOURCE_BUNDLE" "$APP/Contents/Resources/$RESOURCE_BUNDLE"
-            chmod -R u+w "$APP/Contents/Resources/$RESOURCE_BUNDLE"
-          fi
+          # Copy every SwiftPM resource bundle (ClipMenu_ClipMenu.bundle, plus any
+          # dependency's, e.g. DragonKit_DragonKit.bundle with the kit's localized
+          # strings). SwiftPM marks the copied files read-only, hence chmod.
+          for BUNDLE_PATH in "$BIN_PATH"/*.bundle; do
+            [ -d "$BUNDLE_PATH" ] || continue
+            BUNDLE_NAME="$(basename "$BUNDLE_PATH")"
+            cp -R "$BUNDLE_PATH" "$APP/Contents/Resources/$BUNDLE_NAME"
+            chmod -R u+w "$APP/Contents/Resources/$BUNDLE_NAME"
+          done
 
           # Embed Sparkle.framework (auto-update). The executable finds it via the
           # @loader_path/../Frameworks rpath (Package.swift). cp -R preserves symlinks.
@@ -339,11 +343,11 @@ jobs:
           fi
 
           # Sign nested bundles inside-out, then seal the main bundle, all hardened.
-          RESOURCE_BUNDLE="$APP/Contents/Resources/ClipMenu_ClipMenu.bundle"
-          if [ -d "$RESOURCE_BUNDLE" ]; then
+          for RESOURCE_BUNDLE in "$APP"/Contents/Resources/*.bundle; do
+            [ -d "$RESOURCE_BUNDLE" ] || continue
             codesign --force --options runtime --timestamp \
               --sign "$SIGN_IDENTITY" --keychain "$KEYCHAIN_PATH" "$RESOURCE_BUNDLE"
-          fi
+          done
 
           # Sign Sparkle.framework inside-out (XPC services, Autoupdate, Updater.app,
           # then the framework). --deep is unreliable for notarization, hence explicit.
