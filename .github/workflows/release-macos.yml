@@ -191,7 +191,7 @@ jobs:
     # (clipmenu-2) pass swiftpm_runner: macos-26.
     runs-on: ${{ inputs.swiftpm_runner }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           # Full history so `git rev-list --count HEAD` yields a real, monotonic
           # build number (a shallow clone would always report 1).
