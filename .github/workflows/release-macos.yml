@@ -403,12 +403,19 @@ jobs:
           set -euo pipefail
           ARCHIVE="$RUNNER_TEMP/App.xcarchive"
           EXPORT_DIR="$RUNNER_TEMP/export"
+          # Build number = git commit count (monotonic), matching the swiftpm/script
+          # paths so Sparkle sees a newer build each release. Passed as a build
+          # setting so xcodebuild bakes it into the SIGNED bundle (editing Info.plist
+          # after signing would break the signature). Falls back to the project's
+          # CURRENT_PROJECT_VERSION if git height is somehow unavailable.
+          BUILD="$(git rev-list --count HEAD 2>/dev/null || echo '')"
           xcodebuild archive \
             -project "${{ inputs.xcode_project }}" \
             -scheme "${{ inputs.xcode_scheme }}" \
             -configuration Release \
             -archivePath "$ARCHIVE" \
             -derivedDataPath "$RUNNER_TEMP/dd" \
+            ${BUILD:+CURRENT_PROJECT_VERSION="$BUILD"} \
             OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
             CODE_SIGN_IDENTITY="$SIGN_IDENTITY" \
             CODE_SIGN_STYLE=Manual \
