@@ -548,10 +548,10 @@ jobs:
             if [ "${{ inputs.stage_install_txt }}" = "true" ]; then
               {
                 printf '%s\n' "Yahoo KeyKey 2 — Install" ""
-                printf '%s\n' "The easiest way is the .pkg installer. To install from this zip manually:" ""
+                printf '%s\n' "Install from this zip by copying the app into your Input Methods folder:" ""
                 printf '%s\n' "1. Copy \"YahooKeyKey2.app\" into your Input Methods folder:"
                 printf '%s\n' "       ~/Library/Input Methods/"
-                printf '%s\n' "   (Create the folder if it does not exist.)" ""
+                printf '%s\n' "   (Create the folder if it does not exist. No admin password needed.)" ""
                 printf '%s\n' "2. Log out and log back in. macOS only scans input methods at login." ""
                 printf '%s\n' "3. System Settings > Keyboard > Input Sources > \"+\", choose Traditional"
                 printf '%s\n' "   Chinese, and add Yahoo KeyKey 2 — Cangjie and/or — Simplex." ""
