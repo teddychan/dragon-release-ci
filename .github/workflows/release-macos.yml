@@ -50,6 +50,13 @@ on:
         required: false
         default: 'release-bot@users.noreply.github.com'
 
+      # Version check (all build front-ends) ---------------------------------
+      assert_tag_matches_plist:
+        description: 'Assert the tag version == the built app CFBundleShortVersionString, failing the release before notarization if they differ. Applies to every build_kind.'
+        type: boolean
+        required: false
+        default: false
+
       # swiftpm front-end (clipmenu-2) ---------------------------------------
       swiftpm_working_directory:
         description: 'Directory holding Package.swift / Info.plist for the swiftpm build'
@@ -105,11 +112,6 @@ on:
         default: ''
 
       # script front-end (yahoo-keykey-2) ------------------------------------
-      assert_tag_matches_plist:
-        description: 'Assert tag version == built app CFBundleShortVersionString (keykey)'
-        type: boolean
-        required: false
-        default: false
       script_entitlements_path:
         description: 'Entitlements file to pass to codesign of the main app (script front-end). Empty = no entitlements.'
         type: string
@@ -445,13 +447,6 @@ jobs:
           tools/build-app.sh
           APP="$GITHUB_WORKSPACE/build/YahooKeyKey2.app"
           test -d "$APP" || { echo "::error::build-app.sh did not produce $APP" >&2; exit 1; }
-          if [ "${{ inputs.assert_tag_matches_plist }}" = "true" ]; then
-            BUILT_VERSION="$(/usr/bin/plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist")"
-            if [ "$BUILT_VERSION" != "$VERSION" ]; then
-              echo "::error::Tag version ($VERSION) != Info.plist CFBundleShortVersionString ($BUILT_VERSION). Bump the plist or fix the tag." >&2
-              exit 1
-            fi
-          fi
           echo "APP=$APP" >> "$GITHUB_ENV"
 
       - name: Sign (Developer ID + hardened runtime) [script]
@@ -480,6 +475,22 @@ jobs:
             ${ENTITLEMENTS_ARGS[@]+"${ENTITLEMENTS_ARGS[@]}"} \
             --sign "$SIGN_IDENTITY" --keychain "$KEYCHAIN_PATH" "$APP"
           codesign --verify --strict --verbose=2 "$APP"
+
+      # --- Common: version check -------------------------------------------
+      # Every front-end has set $APP by now, so this guards all three build kinds
+      # (it used to live inside the [script] step, where the swiftpm/xcodebuild
+      # callers that opted in silently skipped it). Runs before notarization so a
+      # version slip fails in seconds instead of after a ~10-60m notary round trip.
+      - name: Assert tag version == CFBundleShortVersionString
+        if: ${{ inputs.assert_tag_matches_plist }}
+        run: |
+          set -euo pipefail
+          BUILT_VERSION="$(/usr/bin/plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist")"
+          if [ "$BUILT_VERSION" != "$VERSION" ]; then
+            echo "::error::Tag version ($VERSION) != Info.plist CFBundleShortVersionString ($BUILT_VERSION). Bump the plist or fix the tag." >&2
+            exit 1
+          fi
+          echo "Tag $TAG matches the built app's version ($BUILT_VERSION)."
 
       # --- Common: notarize ------------------------------------------------
       - name: Notarize and staple
