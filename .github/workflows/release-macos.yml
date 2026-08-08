@@ -313,6 +313,17 @@ jobs:
           # version if git height is somehow unavailable.
           BUILD="$(git rev-list --count HEAD 2>/dev/null || echo "$VERSION")"
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUILD}" "$APP/Contents/Info.plist"
+          # The commit's own timestamp, which DragonKit >= 3.0.0 renders after the build
+          # number: "v2.4.1 (756) · 2026-Aug-07 16:54:20 UTC". It used to read the
+          # executable's mtime — the moment this job linked and signed the binary — so the
+          # two halves of that line described different things and drifted apart. Both now
+          # describe the same commit. Stamped before signing; DragonKit shows no date at
+          # all when the key is absent, deliberately, so a missing stamp is visible.
+          COMMIT_DATE="$(git log -1 --format=%cI 2>/dev/null || true)"
+          if [ -n "$COMMIT_DATE" ]; then
+            /usr/libexec/PlistBuddy -c "Set :DragonCommitDate ${COMMIT_DATE}" "$APP/Contents/Info.plist" 2>/dev/null \
+              || /usr/libexec/PlistBuddy -c "Add :DragonCommitDate string ${COMMIT_DATE}" "$APP/Contents/Info.plist"
+          fi
           # App icon is optional: ClipMenu ships AppIcon.icns; the sample app defers
           # a custom icon and falls back to the system default.
           [ -f AppIcon.icns ] && cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns" || true
@@ -411,6 +422,13 @@ jobs:
           # after signing would break the signature). Falls back to the project's
           # CURRENT_PROJECT_VERSION if git height is somehow unavailable.
           BUILD="$(git rev-list --count HEAD 2>/dev/null || echo '')"
+          # The commit's own timestamp, rendered by DragonKit >= 3.0.0 after the build
+          # number. A build setting rather than a PlistBuddy edit for the same reason as
+          # CURRENT_PROJECT_VERSION above: xcodebuild hands back a SIGNED bundle, and
+          # editing its Info.plist afterwards breaks the signature. This only reaches the
+          # app if its Info.plist maps the key through:
+          #     <key>DragonCommitDate</key><string>$(DRAGON_COMMIT_DATE)</string>
+          COMMIT_DATE="$(git log -1 --format=%cI 2>/dev/null || echo '')"
           xcodebuild archive \
             -project "${{ inputs.xcode_project }}" \
             -scheme "${{ inputs.xcode_scheme }}" \
@@ -418,6 +436,7 @@ jobs:
             -archivePath "$ARCHIVE" \
             -derivedDataPath "$RUNNER_TEMP/dd" \
             ${BUILD:+CURRENT_PROJECT_VERSION="$BUILD"} \
+            ${COMMIT_DATE:+DRAGON_COMMIT_DATE="$COMMIT_DATE"} \
             OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
             CODE_SIGN_IDENTITY="$SIGN_IDENTITY" \
             CODE_SIGN_STYLE=Manual \
@@ -448,6 +467,19 @@ jobs:
           APP="$GITHUB_WORKSPACE/build/YahooKeyKey2.app"
           test -d "$APP" || { echo "::error::build-app.sh did not produce $APP" >&2; exit 1; }
           echo "APP=$APP" >> "$GITHUB_ENV"
+
+      - name: Stamp the commit date [script]
+        if: ${{ inputs.build_kind == 'script' }}
+        run: |
+          set -euo pipefail
+          # The commit's own timestamp, rendered by DragonKit >= 3.0.0 after the build
+          # number. Stamped here rather than inside build-app.sh so a local developer
+          # build and a release agree, and because it has to land before the signing step
+          # below — editing Info.plist after signing breaks the signature.
+          COMMIT_DATE="$(git log -1 --format=%cI 2>/dev/null || true)"
+          [ -n "$COMMIT_DATE" ] || exit 0
+          /usr/libexec/PlistBuddy -c "Set :DragonCommitDate ${COMMIT_DATE}" "$APP/Contents/Info.plist" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Add :DragonCommitDate string ${COMMIT_DATE}" "$APP/Contents/Info.plist"
 
       - name: Sign (Developer ID + hardened runtime) [script]
         if: ${{ inputs.build_kind == 'script' }}
