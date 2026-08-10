@@ -50,9 +50,27 @@ on:
         required: false
         default: 'release-bot@users.noreply.github.com'
 
+      # Public tag release gate (all build front-ends) ------------------------
+      # See dragon-kit/docs/MAC-APP-RELEASE-LIFECYCLE.md and scripts/tag-gate.sh.
+      whats_new_path:
+        description: "Repo-relative path to the app's What's New source, e.g. app/Sources/ClipMenu/WhatsNewConfig.swift. REQUIRED: the gate fails when unset, because a check that cannot fail is worse than no check."
+        type: string
+        required: false
+        default: ''
+      release_tag:
+        description: 'Only for a manual dispatch, where the ref is a branch: names an ALREADY EXISTING exact public vX.Y.Z tag to release. The whole job then checks out THAT COMMIT, not the branch head. A branch name can never become a release version, so leaving this empty on a branch ref fails the gate unless verify_only is true.'
+        type: string
+        required: false
+        default: ''
+      verify_only:
+        description: 'true: run the gate and the build, then stop. Nothing is signed, notarized, zipped, uploaded, released, published to the appcast, bumped in Homebrew, or dispatched to the marketing site, and no signing/notary secret is even passed to a step. This is the "or run as verification-only" half of the lifecycle spec, and the only way to exercise the pipeline from a branch with no tag.'
+        type: boolean
+        required: false
+        default: false
+
       # Version check (all build front-ends) ---------------------------------
       assert_tag_matches_plist:
-        description: 'Assert the tag version == the built app CFBundleShortVersionString, failing the release before notarization if they differ. Applies to every build_kind.'
+        description: 'Assert the tag version == the built app CFBundleShortVersionString, failing the release before notarization if they differ. Applies to every build_kind. This is the post-build half of the gate; the pre-build half is the tag gate above.'
         type: boolean
         required: false
         default: false
@@ -161,17 +179,33 @@ on:
         required: false
         default: false
 
+    # Every secret is declared OPTIONAL, including the five signing/notary ones that were
+    # `required: true` through v5.
+    #
+    # Not a relaxation — a prerequisite for `verify_only`. `required: true` is enforced by GitHub
+    # at workflow STARTUP, before any step or `if:` is evaluated, so a caller with `secrets:
+    # inherit` and no signing secrets could not even begin a verification-only run. Found the
+    # first time Dragon Sample App dispatched one: `startup_failure` in 2 seconds, with no log to
+    # explain it. A verification run is supposed to need no signing secret at all, and that is
+    # only expressible here.
+    #
+    # A real release still cannot ship without them. The gate runs first; signing and notarization
+    # then receive an empty value and hard-fail — before notarization, upload, the appcast, the
+    # Homebrew bump and the site dispatch, all of which are separately guarded. So the failure
+    # mode moves from "cannot start" to "stops at the signing step it needs", which is both later
+    # and clearer. `scripts/test-workflow-contract.py` pins this so nobody restores `required:
+    # true` without understanding that it disables verify-only for any repo lacking the secrets.
     secrets:
       DEVELOPER_ID_CERT_P12_BASE64:
-        required: true
+        required: false
       DEVELOPER_ID_CERT_PASSWORD:
-        required: true
+        required: false
       NOTARY_KEY_P8_BASE64:
-        required: true
+        required: false
       NOTARY_KEY_ID:
-        required: true
+        required: false
       NOTARY_ISSUER_ID:
-        required: true
+        required: false
       PROVISIONING_PROFILE_BASE64:
         required: false
       APPLE_TEAM_ID:
@@ -193,10 +227,49 @@ jobs:
     # (clipmenu-2) pass swiftpm_runner: macos-26.
     runs-on: ${{ inputs.swiftpm_runner }}
     steps:
+      # State the mode before anything else runs, so the log's first lines say whether this run
+      # can publish. A verification-only run that is silently indistinguishable from a release
+      # run is how someone concludes "the release worked" from a run that shipped nothing.
+      - name: Announce the run mode
+        env:
+          VERIFY_ONLY: ${{ inputs.verify_only }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [ "${VERIFY_ONLY:-}" = "true" ]; then
+            echo "::notice title=Verification-only run::Gate and build only. Nothing will be signed, notarized, zipped, uploaded, released, published to the appcast, bumped in Homebrew, or dispatched to the marketing site."
+            {
+              echo "### :mag: Verification-only run"
+              echo
+              echo "Every side-effecting step is skipped and its credentials are withheld."
+              echo "No artifact from this run can reach a user."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::notice title=Publishing run::A successful run WILL sign, notarize and publish."
+            {
+              echo "### :rocket: Publishing run"
+              echo
+              echo "Ref: \`${GITHUB_REF_NAME}\` (${GITHUB_REF_TYPE})${RELEASE_TAG:+, release_tag \`${RELEASE_TAG}\`}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - uses: actions/checkout@v7
         with:
+          # A manual dispatch arrives with the CALLER's BRANCH ref, so the default checkout would
+          # build the branch head while the gate validated a tag that points somewhere else
+          # entirely — a release whose contents were never the tagged contents. When release_tag
+          # is given, check out THAT COMMIT and let the whole job (gate, build, version
+          # assertion, packaging) run on it.
+          #
+          # An empty ref means "use the triggering event's ref", i.e. today's behaviour, so a
+          # normal v* tag push is unchanged. A release_tag naming a tag that does not exist fails
+          # here in the checkout rather than in the gate; the message is less friendly but the
+          # run still stops before anything is built or signed.
+          ref: ${{ inputs.release_tag != '' && format('refs/tags/{0}', inputs.release_tag) || '' }}
           # Full history so `git rev-list --count HEAD` yields a real, monotonic
-          # build number (a shallow clone would always report 1).
+          # build number (a shallow clone would always report 1) — and so the gate can see every
+          # v* tag when it looks for the one preceding this release. fetch-depth: 0 fetches all
+          # branches and tags regardless of `ref`, which is what makes the line above safe.
           fetch-depth: 0
 
       - name: Select Xcode
@@ -209,29 +282,88 @@ jobs:
           swift --version
           xcodebuild -version
 
-      - name: Resolve version
+      # This workflow file comes from dragon-release-ci but the checkout above is the CALLER's
+      # repo, so the gate script is not on disk yet. Fetch it from this workflow's own repo at
+      # the same ref, so the gate and the workflow that runs it can never be different versions.
+      #
+      # `job.workflow_sha` ("the commit SHA of the workflow file that defines the current job")
+      # and `job.workflow_repository` ("the owner/repo of the repository containing the workflow
+      # file") are the documented properties for exactly this. Both are GitHub-supplied and
+      # trusted; both are documented as NOT available on GitHub Enterprise Server, which does not
+      # matter here because every Dragon repo lives on github.com. `github.job_workflow_sha` is
+      # not a documented context property and was what this step used to interpolate.
+      #
+      # actionlint 1.7.12 warns "property not defined in object type" for both of these: its
+      # hand-maintained context schema has job.check_run_id but not the job.workflow_* group. It
+      # flagged the previous github.job_workflow_sha too, so the warning is not a signal about
+      # which spelling is right — the contexts reference is.
+      #
+      # An undefined context property renders as the EMPTY STRING, and actions/checkout treats an
+      # empty ref as "the default branch" — so a typo here would silently check out main and run
+      # a gate from a different commit than this workflow. Hence the assertion below: fail, do
+      # not fall back.
+      - name: Resolve this workflow's own repo and commit
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"
-          echo "TAG=${TAG}" >> "$GITHUB_ENV"
-          # Strip everything up to and including the last "v" so both "vX.Y.Z" (clipmenu,
-          # ice, keykey) and app-prefixed tags like "sample-vX.Y.Z" (dragon-sample-app,
-          # sharing a repo's v* library tags) resolve to the bare X.Y.Z version.
-          echo "VERSION=${TAG##*v}" >> "$GITHUB_ENV"
+          if [ -z "${WORKFLOW_REPOSITORY:-}" ] || [ -z "${WORKFLOW_SHA:-}" ]; then
+            echo "::error::job.workflow_repository ('${WORKFLOW_REPOSITORY:-}') or job.workflow_sha ('${WORKFLOW_SHA:-}') resolved empty. Refusing to continue: actions/checkout would fall back to the default branch and run a release gate from a different commit than this workflow. These properties are unavailable on GitHub Enterprise Server." >&2
+            exit 1
+          fi
+          echo "Release-CI scripts will come from ${WORKFLOW_REPOSITORY} @ ${WORKFLOW_SHA}"
+
+      - name: Check out the release-CI scripts
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-ci
+          fetch-depth: 1
+
+      # THE GATE. Runs before the certificate import and all three build front-ends, so a
+      # rejection costs nothing and — critically — nothing has been signed or notarized yet.
+      # The remedy for a failure is a fresh version, because a release tag must never be deleted
+      # and re-pushed (GitHub demotes the published Release to a draft whose asset 404s).
+      #
+      # This replaces `VERSION=${TAG##*v}`, which was actively unsafe: that expansion leaves a
+      # value containing no "v" untouched, so a caller triggered by workflow_dispatch arrived
+      # with a BRANCH ref and produced VERSION=main. It also accepted prefixed families the
+      # lifecycle spec no longer permits.
+      - name: Public tag release gate
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          WHATS_NEW_PATH: ${{ inputs.whats_new_path }}
+          # The gate's only relaxation: with verify_only it accepts a branch with no tag, and
+          # then exports an EMPTY VERSION. That is safe solely because every publishing step
+          # below is individually guarded on the same input AND starved of its credentials.
+          VERIFY_ONLY: ${{ inputs.verify_only }}
+        run: |
+          set -euo pipefail
+          bash .release-ci/scripts/tag-gate.sh >> "$GITHUB_ENV"
 
       # The Developer ID cert import has no dependency on the app existing, and
       # xcodebuild signs INSIDE the archive — it needs the keychain/identity
       # present at build time. So import the cert here, before all three build
       # front-ends. The swiftpm/script front-ends sign afterward and work fine
       # with the cert already imported.
+      #
+      # Skipped entirely on a verification-only run: it needs no signing secret, so it is not
+      # given one. The `if:` is the first guard and the withheld secrets are the second — if the
+      # `if:` were ever dropped, the step would fail on an empty certificate rather than import
+      # one. Every guarded step below follows the same two-layer shape.
       - name: Import Developer ID certificate
+        if: ${{ !inputs.verify_only }}
         env:
-          CERT_P12_BASE64: ${{ secrets.DEVELOPER_ID_CERT_P12_BASE64 }}
-          CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+          CERT_P12_BASE64: ${{ !inputs.verify_only && secrets.DEVELOPER_ID_CERT_P12_BASE64 || '' }}
+          CERT_PASSWORD: ${{ !inputs.verify_only && secrets.DEVELOPER_ID_CERT_PASSWORD || '' }}
         run: |
           set -euo pipefail
           if [ -z "${CERT_P12_BASE64:-}" ]; then
-            echo "::error::DEVELOPER_ID_CERT_P12_BASE64 secret is not set." >&2
+            echo "::error::No Developer ID certificate available: the DEVELOPER_ID_CERT_P12_BASE64 secret is unset, or it was withheld because verify_only is true." >&2
             exit 1
           fi
           KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
@@ -356,10 +488,10 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Sign (Developer ID + hardened runtime) [swiftpm]
-        if: ${{ inputs.build_kind == 'swiftpm' }}
+        if: ${{ inputs.build_kind == 'swiftpm' && !inputs.verify_only }}
         env:
-          PROVISIONING_PROFILE_BASE64: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          PROVISIONING_PROFILE_BASE64: ${{ !inputs.verify_only && secrets.PROVISIONING_PROFILE_BASE64 || '' }}
+          APPLE_TEAM_ID: ${{ !inputs.verify_only && secrets.APPLE_TEAM_ID || '' }}
           ICLOUD_ENTITLEMENTS_PATH: ${{ inputs.swiftpm_icloud_entitlements_path }}
         run: |
           set -euo pipefail
@@ -410,8 +542,45 @@ jobs:
           codesign --verify --strict --verbose=2 "$APP"
 
       # --- Build front-end: xcodebuild (ice-2) -----------------------------
+      # Two mutually exclusive steps, because `xcodebuild archive` signs INSIDE the archive:
+      # there is no way to archive-and-export without a signing identity, so the verification
+      # path compiles the same scheme and configuration with signing switched off instead. It
+      # still catches everything a verification run is for — a compile break, a missing
+      # resource, a version slip — without producing anything signable.
+      - name: Build (unsigned, no archive) [xcodebuild] [verify-only]
+        if: ${{ inputs.build_kind == 'xcodebuild' && inputs.verify_only }}
+        env:
+          XCODE_PROJECT: ${{ inputs.xcode_project }}
+          XCODE_SCHEME: ${{ inputs.xcode_scheme }}
+        run: |
+          set -euo pipefail
+          BUILD="$(git rev-list --count HEAD 2>/dev/null || echo '')"
+          COMMIT_DATE="$(git log -1 --format=%cI 2>/dev/null || echo '')"
+          xcodebuild build \
+            -project "$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME" \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            ${BUILD:+CURRENT_PROJECT_VERSION="$BUILD"} \
+            ${COMMIT_DATE:+DRAGON_COMMIT_DATE="$COMMIT_DATE"} \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+          APP="$(find "$RUNNER_TEMP/dd/Build/Products" -maxdepth 2 -name '*.app' | head -1)"
+          if [ -z "$APP" ]; then
+            echo "::error::The verification build produced no .app under $RUNNER_TEMP/dd/Build/Products." >&2
+            exit 1
+          fi
+          # $APP only, deliberately: no DD, because the appcast step that reads it cannot run here.
+          echo "APP=$APP" >> "$GITHUB_ENV"
+
       - name: Archive + export (Developer ID) [xcodebuild]
-        if: ${{ inputs.build_kind == 'xcodebuild' }}
+        if: ${{ inputs.build_kind == 'xcodebuild' && !inputs.verify_only }}
+        env:
+          XCODE_PROJECT: ${{ inputs.xcode_project }}
+          XCODE_SCHEME: ${{ inputs.xcode_scheme }}
+          XCODE_EXPORT_OPTIONS: ${{ inputs.xcode_export_options }}
+          XCODE_DEVELOPMENT_TEAM: ${{ inputs.xcode_development_team }}
         run: |
           set -euo pipefail
           ARCHIVE="$RUNNER_TEMP/App.xcarchive"
@@ -430,8 +599,8 @@ jobs:
           #     <key>DragonCommitDate</key><string>$(DRAGON_COMMIT_DATE)</string>
           COMMIT_DATE="$(git log -1 --format=%cI 2>/dev/null || echo '')"
           xcodebuild archive \
-            -project "${{ inputs.xcode_project }}" \
-            -scheme "${{ inputs.xcode_scheme }}" \
+            -project "$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME" \
             -configuration Release \
             -archivePath "$ARCHIVE" \
             -derivedDataPath "$RUNNER_TEMP/dd" \
@@ -440,11 +609,11 @@ jobs:
             OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
             CODE_SIGN_IDENTITY="$SIGN_IDENTITY" \
             CODE_SIGN_STYLE=Manual \
-            DEVELOPMENT_TEAM=${{ inputs.xcode_development_team }}
+            DEVELOPMENT_TEAM="$XCODE_DEVELOPMENT_TEAM"
           xcodebuild -exportArchive \
             -archivePath "$ARCHIVE" \
             -exportPath "$EXPORT_DIR" \
-            -exportOptionsPlist "${{ inputs.xcode_export_options }}"
+            -exportOptionsPlist "$XCODE_EXPORT_OPTIONS"
           APP="$(find "$EXPORT_DIR" -maxdepth 1 -name '*.app' | head -1)"
           if [ -z "$APP" ]; then
             echo "::error::No .app produced by exportArchive." >&2
@@ -482,15 +651,17 @@ jobs:
             || /usr/libexec/PlistBuddy -c "Add :DragonCommitDate string ${COMMIT_DATE}" "$APP/Contents/Info.plist"
 
       - name: Sign (Developer ID + hardened runtime) [script]
-        if: ${{ inputs.build_kind == 'script' }}
+        if: ${{ inputs.build_kind == 'script' && !inputs.verify_only }}
+        env:
+          SCRIPT_ENTITLEMENTS_PATH: ${{ inputs.script_entitlements_path }}
         run: |
           set -euo pipefail
           # Mirror tools/package-release.sh: sign Sparkle inside-out (XPC services,
           # Autoupdate, Updater.app, framework), then the app last with entitlements.
           # No --deep — it corrupts Sparkle's nested signatures.
           ENTITLEMENTS_ARGS=()
-          if [ -n "${{ inputs.script_entitlements_path }}" ]; then
-            ENTITLEMENTS_ARGS=(--entitlements "$GITHUB_WORKSPACE/${{ inputs.script_entitlements_path }}")
+          if [ -n "${SCRIPT_ENTITLEMENTS_PATH}" ]; then
+            ENTITLEMENTS_ARGS=(--entitlements "$GITHUB_WORKSPACE/${SCRIPT_ENTITLEMENTS_PATH}")
           fi
           SPARKLE_FW="$APP/Contents/Frameworks/Sparkle.framework"
           if [ -d "$SPARKLE_FW" ]; then
@@ -513,10 +684,26 @@ jobs:
       # (it used to live inside the [script] step, where the swiftpm/xcodebuild
       # callers that opted in silently skipped it). Runs before notarization so a
       # version slip fails in seconds instead of after a ~10-60m notary round trip.
+      #
+      # Deliberately NOT guarded by verify_only: it is a check, not a side effect, and a
+      # verification run exists to catch exactly this. It is instead guarded against its own
+      # no-op: the gate exports an empty VERSION only on a verification run with no tag, so an
+      # empty VERSION on a publishing run means the gate did not run or did not export, and that
+      # must be a hard failure rather than a silent pass.
       - name: Assert tag version == CFBundleShortVersionString
         if: ${{ inputs.assert_tag_matches_plist }}
+        env:
+          VERIFY_ONLY: ${{ inputs.verify_only }}
         run: |
           set -euo pipefail
+          if [ -z "${VERSION:-}" ]; then
+            if [ "${VERIFY_ONLY:-}" != "true" ]; then
+              echo "::error::VERSION is empty on a publishing run. The tag gate must export it; refusing to skip the version assertion." >&2
+              exit 1
+            fi
+            echo "Verification-only run with no tag: no tag version to assert the build against."
+            exit 0
+          fi
           BUILT_VERSION="$(/usr/bin/plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist")"
           if [ "$BUILT_VERSION" != "$VERSION" ]; then
             echo "::error::Tag version ($VERSION) != Info.plist CFBundleShortVersionString ($BUILT_VERSION). Bump the plist or fix the tag." >&2
@@ -526,14 +713,15 @@ jobs:
 
       # --- Common: notarize ------------------------------------------------
       - name: Notarize and staple
+        if: ${{ !inputs.verify_only }}
         env:
-          NOTARY_KEY_P8_BASE64: ${{ secrets.NOTARY_KEY_P8_BASE64 }}
-          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
-          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_KEY_P8_BASE64: ${{ !inputs.verify_only && secrets.NOTARY_KEY_P8_BASE64 || '' }}
+          NOTARY_KEY_ID: ${{ !inputs.verify_only && secrets.NOTARY_KEY_ID || '' }}
+          NOTARY_ISSUER_ID: ${{ !inputs.verify_only && secrets.NOTARY_ISSUER_ID || '' }}
         run: |
           set -euo pipefail
           if [ -z "${NOTARY_KEY_P8_BASE64:-}" ]; then
-            echo "::error::NOTARY_KEY_P8_BASE64 secret is not set." >&2
+            echo "::error::No notary key available: the NOTARY_KEY_P8_BASE64 secret is unset, or it was withheld because verify_only is true." >&2
             exit 1
           fi
           KEY_PATH="$RUNNER_TEMP/notary_key.p8"
@@ -570,16 +758,25 @@ jobs:
           xcrun stapler validate "$APP"
 
       # --- Common: zip -----------------------------------------------------
+      # Guarded even though it only writes a local file: this zip exists solely to be uploaded,
+      # its name embeds the release version, and the step's own name would be a lie on a run
+      # where nothing was notarized.
       - name: Zip notarized app
+        if: ${{ !inputs.verify_only }}
+        env:
+          ZIP_NAME_TEMPLATE: ${{ inputs.zip_name_template }}
+          ZIP_KEEP_PARENT: ${{ inputs.zip_keep_parent }}
+          STAGED_APP_NAME: ${{ inputs.staged_app_name }}
+          STAGE_INSTALL_TXT: ${{ inputs.stage_install_txt }}
         run: |
           set -euo pipefail
           # Expand the zip-name template tokens.
-          ZIP_NAME="${{ inputs.zip_name_template }}"
+          ZIP_NAME="$ZIP_NAME_TEMPLATE"
           ZIP_NAME="${ZIP_NAME//\{MAJOR\}/${MAJOR:-}}"
           ZIP_NAME="${ZIP_NAME//\{VERSION\}/${VERSION}}"
           ZIP_NAME="${ZIP_NAME//\{TAG\}/${TAG}}"
           ZIP="${GITHUB_WORKSPACE}/${ZIP_NAME}"
-          if [ "${{ inputs.zip_keep_parent }}" = "true" ]; then
+          if [ "$ZIP_KEEP_PARENT" = "true" ]; then
             ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
           else
             # keykey: the same zip is BOTH the user download and the Sparkle update
@@ -587,8 +784,8 @@ jobs:
             # archive root. Install.txt is built with printf (no heredoc).
             STAGE="$RUNNER_TEMP/zip-stage"
             rm -rf "$STAGE"; mkdir -p "$STAGE"
-            cp -R "$APP" "$STAGE/${{ inputs.staged_app_name }}"
-            if [ "${{ inputs.stage_install_txt }}" = "true" ]; then
+            cp -R "$APP" "$STAGE/${STAGED_APP_NAME}"
+            if [ "$STAGE_INSTALL_TXT" = "true" ]; then
               {
                 printf '%s\n' "Yahoo KeyKey 2 — Install" ""
                 printf '%s\n' "Install from this zip by copying the app into your Input Methods folder:" ""
@@ -608,11 +805,15 @@ jobs:
           echo "ZIP_NAME=${ZIP_NAME}" >> "$GITHUB_ENV"
 
       - name: Upload to release
+        if: ${{ !inputs.verify_only }}
         env:
-          GH_TOKEN: ${{ github.token }}
+          # Withheld on a verification run, so a `gh` call that somehow ran would fail
+          # unauthenticated instead of creating a public GitHub Release.
+          GH_TOKEN: ${{ !inputs.verify_only && github.token || '' }}
+          RELEASE_TITLE_PREFIX: ${{ inputs.release_title_prefix }}
         run: |
           set -euo pipefail
-          PREFIX="${{ inputs.release_title_prefix }}"
+          PREFIX="$RELEASE_TITLE_PREFIX"
           if [ -n "$PREFIX" ]; then TITLE="$PREFIX $TAG"; else TITLE="$TAG"; fi
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
             || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TITLE" --generate-notes
@@ -622,14 +823,22 @@ jobs:
       # and the EdDSA-signed appcast is published to the marketing site's Pages,
       # path-scoped per app (docs/<app_slug>/appcast.xml), matching SUFeedURL.
       - name: Publish appcast (Sparkle auto-update)
+        if: ${{ !inputs.verify_only }}
         env:
-          PUBLIC_RELEASE_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
-          GITHUB_TOKEN_SELF: ${{ github.token }}
-          SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
+          PUBLIC_RELEASE_TOKEN: ${{ !inputs.verify_only && secrets.PUBLIC_RELEASE_TOKEN || '' }}
+          GITHUB_TOKEN_SELF: ${{ !inputs.verify_only && github.token || '' }}
+          SPARKLE_EDDSA_PRIVATE_KEY: ${{ !inputs.verify_only && secrets.SPARKLE_EDDSA_PRIVATE_KEY || '' }}
+          APPCAST_REPO: ${{ inputs.appcast_repo }}
+          APP_SLUG: ${{ inputs.app_slug }}
+          GENERATE_APPCAST_GLOB: ${{ inputs.generate_appcast_glob }}
+          SWIFTPM_WORKING_DIRECTORY: ${{ inputs.swiftpm_working_directory }}
+          APPCAST_MAXIMUM_DELTAS_ZERO: ${{ inputs.appcast_maximum_deltas_zero }}
+          APPCAST_INJECT_KEYKEY_REQUIREMENTS: ${{ inputs.appcast_inject_keykey_requirements }}
+          BOT_NAME: ${{ inputs.bot_name }}
+          BOT_EMAIL: ${{ inputs.bot_email }}
         run: |
           set -euo pipefail
-          SITE_REPO="${{ inputs.appcast_repo }}"
-          APP_SLUG="${{ inputs.app_slug }}"
+          SITE_REPO="$APPCAST_REPO"
           # Publishing to this very repo (self-hosted appcast, e.g. dragon-sample-app) uses the
           # built-in GITHUB_TOKEN, which already has contents:write here — no PAT needed. A
           # different repo (the marketing site) needs the cross-repo PUBLIC_RELEASE_TOKEN.
@@ -643,9 +852,9 @@ jobs:
             exit 0
           fi
           # Locate generate_appcast per build front-end.
-          case "${{ inputs.generate_appcast_glob }}" in
+          case "$GENERATE_APPCAST_GLOB" in
             swiftpm)
-              GEN="$(find "${GITHUB_WORKSPACE}/${{ inputs.swiftpm_working_directory }}/.build/artifacts" -path '*Sparkle/bin/generate_appcast' -type f | head -1)"
+              GEN="$(find "${GITHUB_WORKSPACE}/${SWIFTPM_WORKING_DIRECTORY}/.build/artifacts" -path '*Sparkle/bin/generate_appcast' -type f | head -1)"
               ;;
             xcodebuild)
               GEN="$(find "$DD/SourcePackages/artifacts" -path '*sparkle/Sparkle/bin/generate_appcast' -type f | head -1)"
@@ -655,7 +864,7 @@ jobs:
               test -x "$GEN" || { echo "::error::generate_appcast missing (tools/fetch-sparkle.sh should have cached it)." >&2; exit 1; }
               ;;
             *)
-              echo "::error::unknown generate_appcast_glob: ${{ inputs.generate_appcast_glob }}" >&2; exit 1
+              echo "::error::unknown generate_appcast_glob: ${GENERATE_APPCAST_GLOB}" >&2; exit 1
               ;;
           esac
           if [ -z "$GEN" ]; then
@@ -669,12 +878,12 @@ jobs:
           OUT="$WORK/appcast.xml"
           GEN_ARGS=(--ed-key-file "$KEY_FILE" \
             --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/")
-          if [ "${{ inputs.appcast_maximum_deltas_zero }}" = "true" ]; then
+          if [ "$APPCAST_MAXIMUM_DELTAS_ZERO" = "true" ]; then
             GEN_ARGS+=(--maximum-deltas 0)
           fi
           GEN_ARGS+=(-o "$OUT")
           "$GEN" "${GEN_ARGS[@]}" "$WORK"
-          if [ "${{ inputs.appcast_inject_keykey_requirements }}" = "true" ]; then
+          if [ "$APPCAST_INJECT_KEYKEY_REQUIREMENTS" = "true" ]; then
             # KeyKey declares min system version / hw requirements only in the appcast.
             # Inject them with perl (robust newline handling) if absent.
             if ! grep -q "sparkle:minimumSystemVersion" "$OUT"; then
@@ -687,8 +896,8 @@ jobs:
           mkdir -p "$PAGES/docs/${APP_SLUG}"
           cp "$OUT" "$PAGES/docs/${APP_SLUG}/appcast.xml"
           ( cd "$PAGES"
-            git config user.name "${{ inputs.bot_name }}"
-            git config user.email "${{ inputs.bot_email }}"
+            git config user.name "$BOT_NAME"
+            git config user.email "$BOT_EMAIL"
             git add "docs/${APP_SLUG}/appcast.xml"
             if git diff --cached --quiet; then echo "appcast unchanged"; exit 0; fi
             git commit --no-verify -m "appcast: ${APP_SLUG} ${TAG}"
@@ -696,11 +905,14 @@ jobs:
           echo "Published appcast → https://www.dragonapp.com/${APP_SLUG}/appcast.xml"
 
       - name: Bump Homebrew cask
+        if: ${{ !inputs.verify_only }}
         env:
-          PUBLIC_RELEASE_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
+          PUBLIC_RELEASE_TOKEN: ${{ !inputs.verify_only && secrets.PUBLIC_RELEASE_TOKEN || '' }}
+          APP_SLUG: ${{ inputs.app_slug }}
+          BOT_NAME: ${{ inputs.bot_name }}
+          BOT_EMAIL: ${{ inputs.bot_email }}
         run: |
           set -euo pipefail
-          APP_SLUG="${{ inputs.app_slug }}"
           TAP_REPO="teddychan/homebrew-tap"
           ASSET_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${ZIP_NAME}"
           if [ -z "${PUBLIC_RELEASE_TOKEN:-}" ]; then
@@ -722,8 +934,8 @@ jobs:
             -e "s/^  sha256 \".*\"/  sha256 \"${SHA}\"/" \
             "$CASK"
           ( cd "$TAP_DIR"
-            git config user.name "${{ inputs.bot_name }}"
-            git config user.email "${{ inputs.bot_email }}"
+            git config user.name "$BOT_NAME"
+            git config user.email "$BOT_EMAIL"
             git add "Casks/${APP_SLUG}.rb"
             if git diff --cached --quiet; then echo "cask unchanged"; exit 0; fi
             git commit --no-verify -m "${APP_SLUG} ${VERSION}"
@@ -747,8 +959,9 @@ jobs:
       # Sends no client_payload: the site workflow needs none, and omitting it
       # keeps attacker-settable input out of that workflow entirely.
       - name: Ask the marketing site to refresh its changelog
+        if: ${{ !inputs.verify_only }}
         env:
-          PUBLIC_RELEASE_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
+          PUBLIC_RELEASE_TOKEN: ${{ !inputs.verify_only && secrets.PUBLIC_RELEASE_TOKEN || '' }}
           APP_SLUG: ${{ inputs.app_slug }}
         run: |
           set -euo pipefail
@@ -780,3 +993,23 @@ jobs:
             echo "::warning::changelog refresh dispatch returned HTTP ${CODE}; the site's weekly cron will catch up."
             cat "$RUNNER_TEMP/dispatch.out" 2>/dev/null || true
           fi
+
+      # A verification run's log otherwise ends in a column of grey "skipped" steps, which reads
+      # the same as a run that failed to do its job. Say what actually happened.
+      - name: Verification-only summary
+        if: ${{ inputs.verify_only }}
+        env:
+          BUILD_KIND: ${{ inputs.build_kind }}
+        run: |
+          set -euo pipefail
+          echo "Verified on ${GITHUB_REF_NAME} (${GITHUB_REF_TYPE}): the public tag release gate (${GATE_MODE:-?}) and an unsigned ${BUILD_KIND} build."
+          echo "Not done, by design: sign, notarize, zip, upload, GitHub Release, appcast, Homebrew, site dispatch."
+          {
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Gate | passed (\`${GATE_MODE:-?}\`) |"
+            echo "| Tag | \`${TAG:-none}\` |"
+            echo "| Build | \`${BUILD_KIND}\`, unsigned |"
+            echo "| Published | nothing |"
+          } >> "$GITHUB_STEP_SUMMARY"
