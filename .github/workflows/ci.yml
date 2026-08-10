@@ -1,0 +1,54 @@
+name: CI
+
+# This repository had no CI at all. `release-macos.yml` is `workflow_call` only and
+# `sync-major-tag.yml` fires on a tag push, so the 131 tests guarding the release pipeline for
+# five apps — scripts/test-tag-gate.sh and scripts/test-workflow-contract.py — ran only when
+# somebody remembered to run them by hand.
+#
+# That is the failure those two suites exist to warn about, one level up. test-tag-gate.sh opens by
+# saying a gate that reports success over an unshippable build is worse than no gate;
+# test-workflow-contract.py opens by saying a contract test that quietly stops recognising a step
+# would report success over a workflow that notarizes unguarded. A suite nobody runs makes exactly
+# the same promise and keeps none of it. A PR here can break the tag gate for clipmenu-2, ice-2,
+# spectacle-2, yahoo-keykey-2 and dragon-sample-app simultaneously, and until now nothing would
+# have caught it before a tag was already pushed.
+#
+# ubuntu, not macOS: both suites are portable — bash, git and coreutils for the gate tests, and
+# stdlib plus PyYAML for the contract tests. Nothing here builds or signs an app, so a macOS runner
+# would only cost minutes.
+#
+# No actionlint step, and that is a deliberate omission rather than an oversight.
+# release-macos.yml carries two findings that predate this workflow — SC2012 (`ls` in the
+# Xcode-select step) and SC2046 (an unquoted `$(security list-keychains)`) — and actionlint exits
+# non-zero on them, so a lint step added here would be red on its first run for reasons no diff
+# introduced. Fixing those two belongs in its own change; a CI job that is red from day one teaches
+# everyone to ignore it, which is worse than not having it.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # test-tag-gate.sh builds throwaway repositories with their own tag histories, but the
+          # checkout still has to be a real git repo for the harness to work in.
+          fetch-depth: 0
+
+      # Preinstalled on the GitHub ubuntu images today; installed explicitly so a change to that
+      # image cannot turn the contract tests into a silent skip.
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
+
+      # The gate is what stands between a tag and a signed, notarized, published release. It runs
+      # first because it is the suite whose failure means "do not ship".
+      - name: Tag gate
+        run: ./scripts/test-tag-gate.sh
+
+      # And this proves the workflow still calls that gate in the one position where it matters,
+      # and that no publishing step can slip past the verification-only guard.
+      - name: Workflow contract
+        run: python3 scripts/test-workflow-contract.py
