@@ -169,6 +169,29 @@ on:
         type: string
         required: false
         default: 'teddychan/www.dragonapp.com'
+      appcast_mirror_repo:
+        description: >-
+          A SECOND repo to publish the identical appcast to, for the duration of a feed migration.
+          Empty (the default) publishes to appcast_repo only, which is every app''s steady state.
+
+          MAC-APP-RELEASE-LIFECYCLE.md wants each app to host its production appcast in its own
+          repository, so an outage or a rejected change in the marketing-site repo cannot interfere
+          with update delivery — and it requires migrating "by mirroring the old and new locations
+          until installed versions have moved to the app-owned URL". With one destination there was
+          no way to do that: pointing appcast_repo at the app repo STOPS publishing to the site, and
+          every already-installed copy still reads its SUFeedURL from there, so it silently stops
+          seeing updates. That is the failure the mirror exists to prevent, not a hypothetical: it
+          is the same stranding that deleting dragon-kit''s docs/dragon-sample-app/appcast.xml would
+          have caused for any pre-1.4.1 install.
+
+          Migration order per app: set appcast_repo to the app''s own repo and
+          appcast_mirror_repo to the site, ship a release, THEN move SUFeedURL in Info.plist to the
+          app-owned URL and ship again. Drop the mirror only once no supported version still points
+          at the old location. The appcast is generated once and copied to both, so the two can
+          never disagree.
+        type: string
+        required: false
+        default: ''
       generate_appcast_glob:
         description: 'find expression locating generate_appcast. One of: swiftpm | xcodebuild | keykey-cache'
         type: string
@@ -853,6 +876,7 @@ jobs:
           GITHUB_TOKEN_SELF: ${{ !inputs.verify_only && github.token || '' }}
           SPARKLE_EDDSA_PRIVATE_KEY: ${{ !inputs.verify_only && secrets.SPARKLE_EDDSA_PRIVATE_KEY || '' }}
           APPCAST_REPO: ${{ inputs.appcast_repo }}
+          APPCAST_MIRROR_REPO: ${{ inputs.appcast_mirror_repo }}
           APP_SLUG: ${{ inputs.app_slug }}
           GENERATE_APPCAST_GLOB: ${{ inputs.generate_appcast_glob }}
           SWIFTPM_WORKING_DIRECTORY: ${{ inputs.swiftpm_working_directory }}
@@ -862,16 +886,18 @@ jobs:
           BOT_EMAIL: ${{ inputs.bot_email }}
         run: |
           set -euo pipefail
-          SITE_REPO="$APPCAST_REPO"
-          # Publishing to this very repo (self-hosted appcast, e.g. dragon-sample-app) uses the
-          # built-in GITHUB_TOKEN, which already has contents:write here — no PAT needed. A
-          # different repo (the marketing site) needs the cross-repo PUBLIC_RELEASE_TOKEN.
-          if [ "$SITE_REPO" = "$GITHUB_REPOSITORY" ]; then
-            APPCAST_TOKEN="$GITHUB_TOKEN_SELF"
+          # Pre-check only — the clone below resolves its own token per destination. Publishing to
+          # this very repo (a self-hosted appcast, e.g. dragon-sample-app) uses the built-in
+          # GITHUB_TOKEN, which already has contents:write here; any other repo needs the cross-repo
+          # PUBLIC_RELEASE_TOKEN. A repo with neither this nor the signing key configured skips the
+          # appcast with a warning rather than failing, which is the long-standing behaviour. A
+          # missing token for a mirror you explicitly asked for is a hard error instead.
+          if [ "$APPCAST_REPO" = "$GITHUB_REPOSITORY" ]; then
+            PRIMARY_TOKEN="$GITHUB_TOKEN_SELF"
           else
-            APPCAST_TOKEN="${PUBLIC_RELEASE_TOKEN:-}"
+            PRIMARY_TOKEN="${PUBLIC_RELEASE_TOKEN:-}"
           fi
-          if [ -z "${APPCAST_TOKEN:-}" ] || [ -z "${SPARKLE_EDDSA_PRIVATE_KEY:-}" ]; then
+          if [ -z "${PRIMARY_TOKEN:-}" ] || [ -z "${SPARKLE_EDDSA_PRIVATE_KEY:-}" ]; then
             echo "::warning::appcast token (PUBLIC_RELEASE_TOKEN cross-repo, else GITHUB_TOKEN) and/or SPARKLE_EDDSA_PRIVATE_KEY not set — skipping appcast."
             exit 0
           fi
@@ -914,19 +940,59 @@ jobs:
               perl -0777 -pi -e 's{</item>}{    <sparkle:minimumSystemVersion>12.0</sparkle:minimumSystemVersion>\n    <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>\n</item>}g' "$OUT"
             fi
           fi
-          PAGES="$RUNNER_TEMP/pages"
-          REMOTE="https://x-access-token:${APPCAST_TOKEN}@github.com/${SITE_REPO}.git"
-          git clone --depth 1 "$REMOTE" "$PAGES"
-          mkdir -p "$PAGES/docs/${APP_SLUG}"
-          cp "$OUT" "$PAGES/docs/${APP_SLUG}/appcast.xml"
-          ( cd "$PAGES"
-            git config user.name "$BOT_NAME"
-            git config user.email "$BOT_EMAIL"
-            git add "docs/${APP_SLUG}/appcast.xml"
-            if git diff --cached --quiet; then echo "appcast unchanged"; exit 0; fi
-            git commit --no-verify -m "appcast: ${APP_SLUG} ${TAG}"
-            git push origin HEAD:main )
-          echo "Published appcast → https://www.dragonapp.com/${APP_SLUG}/appcast.xml"
+          # One generated file, copied to every destination, so a mirror can never disagree with
+          # the authoritative feed — the two are byte-identical by construction rather than by two
+          # generate_appcast runs happening to agree.
+          publish_appcast_to() {
+            dest="$1"; label="$2"
+            # Same rule as the pre-check above, per destination: this very repo is reachable with
+            # the built-in GITHUB_TOKEN (contents: write is declared here); any other repo needs
+            # the cross-repo PAT. A mirror is by definition a different repo, so it always needs
+            # PUBLIC_RELEASE_TOKEN.
+            if [ "$dest" = "$GITHUB_REPOSITORY" ]; then
+              token="$GITHUB_TOKEN_SELF"
+            else
+              token="${PUBLIC_RELEASE_TOKEN:-}"
+            fi
+            if [ -z "${token:-}" ]; then
+              echo "::error::no token for the ${label} appcast destination ${dest}: it is not this repository, so it needs PUBLIC_RELEASE_TOKEN." >&2
+              return 1
+            fi
+            pages="$RUNNER_TEMP/pages-$(printf '%s' "$dest" | tr '/' '-')"
+            rm -rf "$pages"
+            git clone --depth 1 "https://x-access-token:${token}@github.com/${dest}.git" "$pages"
+            mkdir -p "$pages/docs/${APP_SLUG}"
+            cp "$OUT" "$pages/docs/${APP_SLUG}/appcast.xml"
+            ( cd "$pages"
+              git config user.name "$BOT_NAME"
+              git config user.email "$BOT_EMAIL"
+              git add "docs/${APP_SLUG}/appcast.xml"
+              # `exit 0` leaves this subshell only, so an unchanged feed at one destination does
+              # not skip the next one.
+              if git diff --cached --quiet; then echo "  ${label}: unchanged at ${dest}"; exit 0; fi
+              git commit --no-verify -m "appcast: ${APP_SLUG} ${TAG}"
+              git push origin HEAD:main )
+            echo "  ${label}: published ${dest} docs/${APP_SLUG}/appcast.xml"
+          }
+
+          publish_appcast_to "$APPCAST_REPO" "appcast"
+          if [ -n "${APPCAST_MIRROR_REPO:-}" ]; then
+            if [ "$APPCAST_MIRROR_REPO" = "$APPCAST_REPO" ]; then
+              echo "::error::appcast_mirror_repo equals appcast_repo (${APPCAST_REPO}). A mirror is a SECOND location; naming the same one twice would push the feed to itself and read as migration coverage that does not exist." >&2
+              exit 1
+            fi
+            # Deliberately fatal, not a warning. During a migration the mirror is the location
+            # every ALREADY-INSTALLED copy reads — so a silently un-mirrored feed is precisely the
+            # "installed versions stop seeing updates" failure the mirror was added to prevent, and
+            # it would be invisible until a user complained. The GitHub Release is already
+            # published by this point either way; a red run is the signal to fix it and push a
+            # fresh version, per the lifecycle spec's "do not move a release tag".
+            publish_appcast_to "$APPCAST_MIRROR_REPO" "migration mirror"
+          fi
+          # Says which repo, not a hardcoded www.dragonapp.com URL: that line was already wrong for
+          # spectacle-2 and dragon-sample-app, which host their own feeds, and a log that names the
+          # wrong host is worse than one that names none.
+          echo "Appcast delivered for ${APP_SLUG} ${TAG}."
 
       - name: Bump Homebrew cask
         if: ${{ !inputs.verify_only }}
