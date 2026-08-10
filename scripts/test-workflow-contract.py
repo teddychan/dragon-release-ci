@@ -249,6 +249,7 @@ def main():
     check_credential_starvation(steps)
     check_no_run_interpolation(steps)
     check_secrets_are_optional(wf)
+    check_build_offset_wiring(wf, steps)
 
     print()
     print(f"{PASS} passed, {FAIL} failed")
@@ -277,6 +278,23 @@ def check_secrets_are_optional(wf):
     for name, spec in sorted(secrets.items()):
         required = (spec or {}).get("required")
         check(f"secret {name} is optional", required is not True, f"required={required}")
+
+
+def check_build_offset_wiring(wf, steps):
+    """Every step that reads BUILD_NUMBER_OFFSET must receive it via `env:`.
+
+    Wired by hand across three build front-ends, which is exactly the kind of edit that gets one
+    of them. A step reading an unset BUILD_NUMBER_OFFSET silently falls back to offset 0 — and a
+    zero offset in the app that needs one produces a CFBundleVersion BELOW the shipped build, so
+    Sparkle stops offering updates. Silent, and only visible to users.
+    """
+    ins = (wf.get(ON_KEY) or {}).get("workflow_call", {}).get("inputs") or {}
+    check("build_number_offset input exists", "build_number_offset" in ins, sorted(ins)[:5])
+    readers = [s for s in steps if "BUILD_NUMBER_OFFSET" in (s.get("run") or "")]
+    check("some step reads BUILD_NUMBER_OFFSET", bool(readers), len(readers))
+    for s in readers:
+        check(f"step '{s.get('name')}' gets BUILD_NUMBER_OFFSET via env",
+              "BUILD_NUMBER_OFFSET" in (s.get("env") or {}), sorted((s.get("env") or {})))
 
 
 if __name__ == "__main__":
