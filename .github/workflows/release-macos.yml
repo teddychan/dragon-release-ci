@@ -304,8 +304,8 @@ jobs:
       # not fall back.
       - name: Resolve this workflow's own repo and commit
         env:
-          WORKFLOW_REPOSITORY: teddychan/dragon-release-ci
-          WORKFLOW_SHA: codex/tag-gate
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
         run: |
           set -euo pipefail
           if [ -z "${WORKFLOW_REPOSITORY:-}" ] || [ -z "${WORKFLOW_SHA:-}" ]; then
@@ -317,8 +317,8 @@ jobs:
       - name: Check out the release-CI scripts
         uses: actions/checkout@v7
         with:
-          repository: teddychan/dragon-release-ci
-          ref: codex/tag-gate
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
           path: .release-ci
           fetch-depth: 1
 
