@@ -250,6 +250,7 @@ def main():
     check_no_run_interpolation(steps)
     check_secrets_are_optional(wf)
     check_build_offset_wiring(wf, steps)
+    check_appcast_mirror_wiring(wf, steps)
 
     print()
     print(f"{PASS} passed, {FAIL} failed")
@@ -295,6 +296,66 @@ def check_build_offset_wiring(wf, steps):
     for s in readers:
         check(f"step '{s.get('name')}' gets BUILD_NUMBER_OFFSET via env",
               "BUILD_NUMBER_OFFSET" in (s.get("env") or {}), sorted((s.get("env") or {})))
+
+
+def check_appcast_mirror_wiring(wf, steps):
+    """The appcast may be published to a second, legacy destination during a feed migration.
+
+    MAC-APP-RELEASE-LIFECYCLE.md requires migrating a feed "by mirroring the old and new locations
+    until installed versions have moved to the app-owned URL". With one destination that was
+    impossible: repointing appcast_repo at the app's own repo STOPS publishing to the site, and
+    every already-installed copy reads its SUFeedURL from there — so it silently stops seeing
+    updates, which is invisible until a user complains.
+
+    Deny-by-default, like everything else here. Each assertion names a way the wiring could be
+    present in the YAML and still not mirror anything.
+    """
+    ins = (wf.get(ON_KEY) or {}).get("workflow_call", {}).get("inputs") or {}
+    spec = ins.get("appcast_mirror_repo")
+    check("input 'appcast_mirror_repo' exists", spec is not None, sorted(ins))
+    if spec is not None:
+        check("appcast_mirror_repo is type string", spec.get("type") == "string", spec)
+        # The compatibility contract: five callers pass nothing, and must keep publishing to
+        # exactly one place. A default naming any repo would start mirroring for all of them.
+        check("appcast_mirror_repo defaults to '' so an unset caller mirrors nowhere",
+              spec.get("default") == "", spec)
+
+    publishers = [s for s in steps if "generate_appcast" in (s.get("run") or "")]
+    check("some step generates the appcast", len(publishers) == 1, len(publishers))
+    if not publishers:
+        return
+    step = publishers[0]
+    body = step.get("run") or ""
+    env = step.get("env") or {}
+
+    check("the appcast step gets APPCAST_MIRROR_REPO via env",
+          "APPCAST_MIRROR_REPO" in env, sorted(env))
+    check("the appcast step reads APPCAST_MIRROR_REPO", "APPCAST_MIRROR_REPO" in body, None)
+
+    # Publishing is factored into one function so the primary and the mirror cannot drift apart —
+    # two hand-written clone/commit/push blocks is how one of them loses a fix.
+    calls = re.findall(r"^\s*publish_appcast_to\s+(\S+)", body, re.M)
+    check("the appcast is published through one reusable function, called twice",
+          len(calls) == 2, calls)
+    check("one call publishes to APPCAST_REPO",
+          any("APPCAST_REPO" in c and "MIRROR" not in c for c in calls), calls)
+    check("the other publishes to APPCAST_MIRROR_REPO",
+          any("APPCAST_MIRROR_REPO" in c for c in calls), calls)
+
+    # A mirror that names the primary would push the feed to itself and read, in the log, as
+    # migration coverage that does not exist.
+    check("naming the same repo twice is rejected",
+          re.search(r'APPCAST_MIRROR_REPO"?\s*=\s*"?\$\{?APPCAST_REPO', body) is not None
+          and "::error::appcast_mirror_repo equals appcast_repo" in body, None)
+
+    # The whole step is already guarded, but the mirror is the destination installed copies read,
+    # so a failure there must not be swallowed the way the site changelog nudge deliberately is.
+    check("the mirror publish is not made non-fatal",
+          "publish_appcast_to \"$APPCAST_MIRROR_REPO\"" in body
+          and "publish_appcast_to \"$APPCAST_MIRROR_REPO\" \"migration mirror\" || true" not in body,
+          None)
+    check("the appcast step is still guarded by verify_only",
+          GUARD_RE.search(str(step.get("if") or "")) is not None, step.get("if"))
 
 
 if __name__ == "__main__":
