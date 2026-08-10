@@ -53,7 +53,7 @@ on:
       # Public tag release gate (all build front-ends) ------------------------
       # See dragon-kit/docs/MAC-APP-RELEASE-LIFECYCLE.md and scripts/tag-gate.sh.
       whats_new_path:
-        description: "Repo-relative path to the app's What's New source, e.g. app/Sources/ClipMenu/WhatsNewConfig.swift. REQUIRED: the gate fails when unset, because a check that cannot fail is worse than no check."
+        description: "Repo-relative path(s) to the app's What's New source. Accepts a whitespace- or comma-separated list; the FIRST entry is the config file the version and section checks read, and EVERY entry counts toward 'changed since the preceding tag'. List the Localizable.strings files too when the entries are L() keys — spectacle-2, yahoo-keykey-2 and dragon-sample-app keep their note TEXT there, so watching only the .swift lets a full rewrite pass unnoticed, and rejects a real one. REQUIRED: the gate fails when unset, because a check that cannot fail is worse than no check."
         type: string
         required: false
         default: ''

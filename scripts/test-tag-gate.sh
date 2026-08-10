@@ -211,6 +211,52 @@ else
   FAIL=$((FAIL+1)); echo "  FAIL  GATE_MODE was '$MODE', expected release"
 fi
 
+
+# --- multi-path whats_new_path ---------------------------------------------
+# The notes are one artifact split across a config file and its translations. Watching only the
+# config made check 4 weaker than it claimed for spectacle-2, yahoo-keykey-2 and
+# dragon-sample-app, whose entries are L() keys with the TEXT in Localizable.strings — and it
+# rejected dragon-sample-app 1.4.2, where the notes genuinely changed but only in .strings.
+mk_split_repo() {
+  local dir; dir="$(mktemp -d)"
+  (
+    cd "$dir"; init_repo
+    mkdir -p app app/en.lproj
+    printf 'WhatsNewContent(\n  date: "2026-01-01",\n  sections: [ChangeSection(kind: .fixed, entries: [L("a.b")])]\n)\n' > app/WhatsNewConfig.swift
+    printf '"a.b" = "First";\n' > app/en.lproj/Localizable.strings
+    git add -A; git commit -qm init; git tag v1.0.0
+    # A real note rewrite that does NOT touch the .swift.
+    printf '"a.b" = "Rewritten";\n' > app/en.lproj/Localizable.strings
+    git add -A; git commit -qm reword; git tag v1.0.1
+  )
+  echo "$dir"
+}
+SPLIT="$(mk_split_repo)"
+BOTH="app/WhatsNewConfig.swift app/en.lproj/Localizable.strings"
+
+expect_reject "a strings-only rewrite when only the config is watched" \
+  env REPO_DIR="$SPLIT" WHATS_NEW_PATH="app/WhatsNewConfig.swift" REF_TYPE=tag REF_NAME=v1.0.1 "$GATE"
+expect_accept "a strings-only rewrite when both are watched" \
+  env REPO_DIR="$SPLIT" WHATS_NEW_PATH="$BOTH" REF_TYPE=tag REF_NAME=v1.0.1 "$GATE"
+expect_accept "a comma-separated list" \
+  env REPO_DIR="$SPLIT" WHATS_NEW_PATH="app/WhatsNewConfig.swift,app/en.lproj/Localizable.strings" REF_TYPE=tag REF_NAME=v1.0.1 "$GATE"
+expect_reject "a list containing a path that does not exist" \
+  env REPO_DIR="$SPLIT" WHATS_NEW_PATH="$BOTH app/Nope.strings" REF_TYPE=tag REF_NAME=v1.0.1 "$GATE"
+
+# Checks 5 and 6 must read the FIRST entry, not whichever file happens to match.
+SPLIT2="$(mk_split_repo)"
+( cd "$SPLIT2"
+  printf 'WhatsNewContent(\n  version: "1.0.1",\n  date: "2026-01-02",\n  sections: [ChangeSection(kind: .fixed, entries: [L("a.b")])]\n)\n' > app/WhatsNewConfig.swift
+  git add -A; git commit -qm pin; git tag v1.0.2 )
+expect_reject "an explicit version: in the FIRST entry of a list" \
+  env REPO_DIR="$SPLIT2" WHATS_NEW_PATH="$BOTH" REF_TYPE=tag REF_NAME=v1.0.2 "$GATE"
+
+# Nothing changed anywhere -> still rejected. The list widens what counts, it does not excuse.
+SPLIT3="$(mk_split_repo)"
+( cd "$SPLIT3"; printf 'let x = 1\n' > other.swift; git add -A; git commit -qm unrelated; git tag v1.0.3 )
+expect_reject "a release where no watched file changed" \
+  env REPO_DIR="$SPLIT3" WHATS_NEW_PATH="$BOTH" REF_TYPE=tag REF_NAME=v1.0.3 "$GATE"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

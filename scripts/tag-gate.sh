@@ -18,7 +18,18 @@
 #   RELEASE_TAG     Optional. When the trigger was a manual dispatch (a branch ref), this must
 #                   name an ALREADY EXISTING exact public tag. A branch name can never become a
 #                   release version.
-#   WHATS_NEW_PATH  Repo-relative path to the app's What's New source. Required.
+#   WHATS_NEW_PATH  Repo-relative path(s) to the app's What's New source. Required. Accepts a
+#                   whitespace- or comma-separated list. The FIRST entry is the config file —
+#                   checks 5 and 6 read it. EVERY entry counts toward check 4, "changed since the
+#                   preceding tag".
+#
+#                   A list, because a single path made check 4 weaker than it claimed for three of
+#                   five apps: spectacle-2, yahoo-keykey-2 and dragon-sample-app put their entries
+#                   in `L()` keys whose TEXT lives in Localizable.strings, so the notes can be
+#                   rewritten end to end without the .swift moving — and conversely a real rewrite
+#                   was rejected because only the .strings changed. clipmenu-2 (English sentences
+#                   as keys) and ice-2 (raw literals) happened to be safe. List the strings files
+#                   too and the check means what it says.
 #   VERIFY_ONLY     Optional. Exactly "true" enables verification-only mode: the run may not
 #                   sign, notarize, upload, publish, touch the appcast, bump Homebrew or
 #                   dispatch the site, so a run with no tag at all is permitted. The spec's
@@ -126,12 +137,25 @@ fi
 [ -n "${WHATS_NEW_PATH:-}" ] \
   || fail "WHATS_NEW_PATH is not set. The gate cannot confirm the release notes are current, and
     a check that cannot fail is worse than no check. Pass whats_new_path from the caller."
-[ -f "$WHATS_NEW_PATH" ] \
-  || fail "WHATS_NEW_PATH '${WHATS_NEW_PATH}' does not exist in the checkout."
+
+# Split on commas and whitespace. Every path must exist — a typo silently narrowing what the diff
+# watches is the failure this list exists to prevent.
+WN_PATHS=""
+for wn in $(printf '%s' "$WHATS_NEW_PATH" | tr ',' ' '); do
+  [ -f "$wn" ] || fail "whats_new_path entry '${wn}' does not exist in the checkout."
+  WN_PATHS="$WN_PATHS $wn"
+done
+# shellcheck disable=SC2086
+set -- $WN_PATHS
+WN_CONFIG="$1"
+note "What's New sources: $# file(s); config = ${WN_CONFIG}"
 
 if [ -n "$PREVIOUS_TAG" ]; then
-  if git diff --quiet "${PREVIOUS_TAG}" "${TAG}" -- "$WHATS_NEW_PATH" 2>/dev/null; then
-    fail "${WHATS_NEW_PATH} has not changed since ${PREVIOUS_TAG}.
+  # ANY listed file changing counts: the notes are one artifact split across a config file and its
+  # translations, and moving either is a real edit to what the user reads.
+  if git diff --quiet "${PREVIOUS_TAG}" "${TAG}" -- $WN_PATHS 2>/dev/null; then
+    fail "none of the What's New sources changed since ${PREVIOUS_TAG}:
+   $WN_PATHS
     Every public release updates What's New, including a maintenance-only one — otherwise the
     pane relabels the previous release's notes with this version's number. Update it and tag a
     fresh version; do not move this tag."
@@ -143,21 +167,21 @@ fi
 # The heading derives from CFBundleShortVersionString, which is the same string this gate
 # asserts the tag against. An explicit `version:` argument re-introduces a second, hand-typed
 # source of truth that silently disagrees with the bundle on the next release.
-if grep -nE '^[^/]*\bWhatsNewContent\(' -A6 "$WHATS_NEW_PATH" | grep -qE '^\s*[0-9]*[-:]?\s*version:'; then
-  grep -nE -A6 '\bWhatsNewContent\(' "$WHATS_NEW_PATH" | grep -nE 'version:' >&2 || true
-  fail "${WHATS_NEW_PATH} passes an explicit 'version:' to WhatsNewContent.
+if grep -nE '^[^/]*\bWhatsNewContent\(' -A6 "$WN_CONFIG" | grep -qE '^\s*[0-9]*[-:]?\s*version:'; then
+  grep -nE -A6 '\bWhatsNewContent\(' "$WN_CONFIG" | grep -nE 'version:' >&2 || true
+  fail "${WN_CONFIG} passes an explicit 'version:' to WhatsNewContent.
     The heading must derive from CFBundleShortVersionString. Remove the argument."
 fi
 
 # ---------------------------------------------------------------- 6. notes say something
 # Either real entries, or an explicit statement that the release is maintenance-only. A release
 # with neither has notes that describe nothing.
-if grep -q 'ChangeSection(' "$WHATS_NEW_PATH"; then
+if grep -q 'ChangeSection(' "$WN_CONFIG"; then
   note "notes contain change sections"
-elif grep -qiE 'maintenance|no user-facing|noUserFacingChanges' "$WHATS_NEW_PATH"; then
+elif grep -qiE 'maintenance|no user-facing|noUserFacingChanges' "$WN_CONFIG"; then
   note "notes declare a maintenance-only release"
 else
-  fail "${WHATS_NEW_PATH} has neither a ChangeSection nor an explicit maintenance-only
+  fail "${WN_CONFIG} has neither a ChangeSection nor an explicit maintenance-only
     statement. Say what changed, or say plainly that nothing user-facing did."
 fi
 
