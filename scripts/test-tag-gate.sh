@@ -155,6 +155,62 @@ REPO6="$(make_repo v2.10.0)"
 expect_accept "an explicit maintenance-only release" \
   env REPO_DIR="$REPO6" WHATS_NEW_PATH=app/WhatsNewConfig.swift REF_TYPE=tag REF_NAME=v2.10.1 "$GATE"
 
+# --- verification-only mode -------------------------------------------------
+# The spec's "a manual workflow dispatch must name an existing exact tag OR run as
+# verification-only". This is the gate's ONLY relaxation, and it is safe purely because a
+# verification-only run cannot sign, notarize, upload, publish, touch the appcast, bump Homebrew
+# or dispatch the site. So the tests below are really two claims: the branch exists, and it
+# relaxes nothing beyond the tag itself.
+expect_accept "verify-only from a branch with no tag" \
+  "${BASE[@]}" REF_TYPE=branch REF_NAME=main VERIFY_ONLY=true "$GATE"
+
+# Only the exact string "true". A caller that forwards a dispatch input can send anything, and
+# every other value must leave the gate at full strength rather than half-relax it.
+for notTrue in false 1 yes True TRUE '' ; do
+  expect_reject "verify-only spelled '${notTrue}' (not exactly 'true')" \
+    "${BASE[@]}" REF_TYPE=branch REF_NAME=main VERIFY_ONLY="$notTrue" "$GATE"
+done
+
+# A tag that IS present is still held to the format, and a named tag must still exist: verify-only
+# removes the requirement to HAVE a tag, never the rules about one.
+expect_reject "verify-only with a prefixed tag ref" \
+  "${BASE[@]}" REF_TYPE=tag REF_NAME=sample-v1.2.0 VERIFY_ONLY=true "$GATE"
+expect_reject "verify-only naming a tag that does not exist" \
+  "${BASE[@]}" REF_TYPE=branch REF_NAME=main RELEASE_TAG=v9.9.9 VERIFY_ONLY=true "$GATE"
+
+# The three checks that do not need a tag stay enforced with no tag.
+expect_reject "verify-only with an unset WHATS_NEW_PATH" \
+  env REPO_DIR="$REPO" REF_TYPE=branch REF_NAME=main VERIFY_ONLY=true "$GATE"
+expect_reject "verify-only with a WHATS_NEW_PATH that does not exist" \
+  env REPO_DIR="$REPO" WHATS_NEW_PATH=app/Nope.swift REF_TYPE=branch REF_NAME=main VERIFY_ONLY=true "$GATE"
+expect_reject "verify-only with an explicit version: argument" \
+  env REPO_DIR="$REPO4" WHATS_NEW_PATH=app/WhatsNewConfig.swift REF_TYPE=branch REF_NAME=main VERIFY_ONLY=true "$GATE"
+expect_reject "verify-only with notes that say nothing" \
+  env REPO_DIR="$REPO5" WHATS_NEW_PATH=app/WhatsNewConfig.swift REF_TYPE=branch REF_NAME=main VERIFY_ONLY=true "$GATE"
+
+# A tag ref is gated in full even under verify-only, so a verification run is a true rehearsal.
+expect_reject "verify-only on a tag whose What's New did not change" \
+  env REPO_DIR="$REPO3" WHATS_NEW_PATH=app/WhatsNewConfig.swift REF_TYPE=tag REF_NAME=v2.10.1 VERIFY_ONLY=true "$GATE"
+
+# No tag means NO version, not a guessed one. Everything downstream keys off this being empty:
+# the workflow's version assertion hard-fails on an empty VERSION unless verify_only is set.
+OUT="$("${BASE[@]}" REF_TYPE=branch REF_NAME=main VERIFY_ONLY=true "$GATE" 2>/dev/null)"
+if [ "$(printf '%s\n' "$OUT" | sed -n 's/^TAG=//p')" = "" ] \
+  && [ "$(printf '%s\n' "$OUT" | sed -n 's/^VERSION=//p')" = "" ] \
+  && [ "$(printf '%s\n' "$OUT" | sed -n 's/^GATE_MODE=//p')" = "verify-only-no-tag" ]; then
+  PASS=$((PASS+1)); echo "  ok    exports an empty TAG/VERSION and GATE_MODE=verify-only-no-tag"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL  verify-only outputs were:"; printf '%s\n' "$OUT" | sed 's/^/        /'
+fi
+
+# A real tag still reports itself as a release, so the workflow can tell the two apart.
+MODE="$("${BASE[@]}" REF_TYPE=tag REF_NAME=v2.11.0 "$GATE" 2>/dev/null | sed -n 's/^GATE_MODE=//p')"
+if [ "$MODE" = "release" ]; then
+  PASS=$((PASS+1)); echo "  ok    a tagged run reports GATE_MODE=release"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL  GATE_MODE was '$MODE', expected release"
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
