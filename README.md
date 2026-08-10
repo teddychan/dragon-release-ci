@@ -15,6 +15,7 @@ Each app repo has a thin `release.yml` that calls this on a `v*` tag:
 |------|--------------|
 | `clipmenu-2`      | `swiftpm`    |
 | `ice-2`           | `xcodebuild` |
+| `spectacle-2`     | `swiftpm`    |
 | `yahoo-keykey-2`  | `script`     |
 
 `clipmenu-2-premium` does **not** use this — it builds the Mac App Store variant
