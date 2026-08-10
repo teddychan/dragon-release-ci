@@ -179,17 +179,33 @@ on:
         required: false
         default: false
 
+    # Every secret is declared OPTIONAL, including the five signing/notary ones that were
+    # `required: true` through v5.
+    #
+    # Not a relaxation — a prerequisite for `verify_only`. `required: true` is enforced by GitHub
+    # at workflow STARTUP, before any step or `if:` is evaluated, so a caller with `secrets:
+    # inherit` and no signing secrets could not even begin a verification-only run. Found the
+    # first time Dragon Sample App dispatched one: `startup_failure` in 2 seconds, with no log to
+    # explain it. A verification run is supposed to need no signing secret at all, and that is
+    # only expressible here.
+    #
+    # A real release still cannot ship without them. The gate runs first; signing and notarization
+    # then receive an empty value and hard-fail — before notarization, upload, the appcast, the
+    # Homebrew bump and the site dispatch, all of which are separately guarded. So the failure
+    # mode moves from "cannot start" to "stops at the signing step it needs", which is both later
+    # and clearer. `scripts/test-workflow-contract.py` pins this so nobody restores `required:
+    # true` without understanding that it disables verify-only for any repo lacking the secrets.
     secrets:
       DEVELOPER_ID_CERT_P12_BASE64:
-        required: true
+        required: false
       DEVELOPER_ID_CERT_PASSWORD:
-        required: true
+        required: false
       NOTARY_KEY_P8_BASE64:
-        required: true
+        required: false
       NOTARY_KEY_ID:
-        required: true
+        required: false
       NOTARY_ISSUER_ID:
-        required: true
+        required: false
       PROVISIONING_PROFILE_BASE64:
         required: false
       APPLE_TEAM_ID:

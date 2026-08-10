@@ -248,6 +248,7 @@ def main():
     check_side_effects(steps, gate_idx)
     check_credential_starvation(steps)
     check_no_run_interpolation(steps)
+    check_secrets_are_optional(wf)
 
     print()
     print(f"{PASS} passed, {FAIL} failed")
@@ -255,6 +256,27 @@ def main():
         return 1
     print("All workflow-contract tests passed.")
     return 0
+
+
+
+def check_secrets_are_optional(wf):
+    """No workflow_call secret may be `required: true`.
+
+    GitHub enforces required secrets at workflow STARTUP, before any step or `if:` is evaluated,
+    so a caller using `secrets: inherit` from a repo with no signing secrets cannot even BEGIN a
+    verification-only run. Dragon Sample App's first dispatch died as `startup_failure` in two
+    seconds with no log explaining it. A verification run is meant to need no signing secret at
+    all, and that is only expressible in this block.
+
+    A real release is still protected: the gate runs first, then signing receives an empty value
+    and hard-fails, before notarization, upload, appcast, Homebrew and the site dispatch — each
+    separately guarded.
+    """
+    secrets = (wf.get(ON_KEY) or {}).get("workflow_call", {}).get("secrets") or {}
+    check("workflow_call declares secrets", bool(secrets), list(secrets))
+    for name, spec in sorted(secrets.items()):
+        required = (spec or {}).get("required")
+        check(f"secret {name} is optional", required is not True, f"required={required}")
 
 
 if __name__ == "__main__":
