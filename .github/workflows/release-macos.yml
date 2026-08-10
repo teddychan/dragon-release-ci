@@ -50,9 +50,22 @@ on:
         required: false
         default: 'release-bot@users.noreply.github.com'
 
+      # Public tag release gate (all build front-ends) ------------------------
+      # See dragon-kit/docs/MAC-APP-RELEASE-LIFECYCLE.md and scripts/tag-gate.sh.
+      whats_new_path:
+        description: "Repo-relative path to the app's What's New source, e.g. app/Sources/ClipMenu/WhatsNewConfig.swift. REQUIRED: the gate fails when unset, because a check that cannot fail is worse than no check."
+        type: string
+        required: false
+        default: ''
+      release_tag:
+        description: 'Only for a manual dispatch, where the ref is a branch: names an ALREADY EXISTING exact public vX.Y.Z tag to release. A branch name can never become a release version, so leaving this empty on a branch ref fails the gate.'
+        type: string
+        required: false
+        default: ''
+
       # Version check (all build front-ends) ---------------------------------
       assert_tag_matches_plist:
-        description: 'Assert the tag version == the built app CFBundleShortVersionString, failing the release before notarization if they differ. Applies to every build_kind.'
+        description: 'Assert the tag version == the built app CFBundleShortVersionString, failing the release before notarization if they differ. Applies to every build_kind. This is the post-build half of the gate; the pre-build half is the tag gate above.'
         type: boolean
         required: false
         default: false
@@ -209,15 +222,38 @@ jobs:
           swift --version
           xcodebuild -version
 
-      - name: Resolve version
+      # This workflow file comes from dragon-release-ci but the checkout above is the CALLER's
+      # repo, so the gate script is not on disk yet. Fetch it from this workflow's own repo at
+      # the same ref, so the gate and the workflow that runs it can never be different versions.
+      - name: Check out the release-CI scripts
+        uses: actions/checkout@v7
+        with:
+          repository: teddychan/dragon-release-ci
+          # `job_workflow_sha` is the exact commit of THIS reusable workflow, so the script is
+          # always the one that ships with it. Checking out the default branch instead would
+          # skew whenever a caller pins @v5 while main has moved. Trusted, GitHub-supplied.
+          ref: ${{ github.job_workflow_sha }}
+          path: .release-ci
+          fetch-depth: 1
+
+      # THE GATE. Runs before the certificate import and all three build front-ends, so a
+      # rejection costs nothing and — critically — nothing has been signed or notarized yet.
+      # The remedy for a failure is a fresh version, because a release tag must never be deleted
+      # and re-pushed (GitHub demotes the published Release to a draft whose asset 404s).
+      #
+      # This replaces `VERSION=${TAG##*v}`, which was actively unsafe: that expansion leaves a
+      # value containing no "v" untouched, so a caller triggered by workflow_dispatch arrived
+      # with a BRANCH ref and produced VERSION=main. It also accepted prefixed families the
+      # lifecycle spec no longer permits.
+      - name: Public tag release gate
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          WHATS_NEW_PATH: ${{ inputs.whats_new_path }}
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"
-          echo "TAG=${TAG}" >> "$GITHUB_ENV"
-          # Strip everything up to and including the last "v" so both "vX.Y.Z" (clipmenu,
-          # ice, keykey) and app-prefixed tags like "sample-vX.Y.Z" (dragon-sample-app,
-          # sharing a repo's v* library tags) resolve to the bare X.Y.Z version.
-          echo "VERSION=${TAG##*v}" >> "$GITHUB_ENV"
+          bash .release-ci/scripts/tag-gate.sh >> "$GITHUB_ENV"
 
       # The Developer ID cert import has no dependency on the app existing, and
       # xcodebuild signs INSIDE the archive — it needs the keychain/identity
