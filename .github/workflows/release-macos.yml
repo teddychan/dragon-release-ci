@@ -68,6 +68,12 @@ on:
         required: false
         default: false
 
+      build_number_offset:
+        description: 'Added to `git rev-list --count HEAD` when stamping CFBundleVersion. Default 0. Needed only when a repo did not always own its releases: Sparkle compares CFBundleVersion (the appcast''s sparkle:version) to decide whether a build is newer, so an app extracted into a fresh repository restarts its commit count and its next release would look OLDER than the one users have installed. Dragon Sample App shipped build 77 from dragon-kit and its new repo starts at 12, so it passes an offset that clears 77. Raising this later is safe; lowering it breaks updates.'
+        type: string
+        required: false
+        default: '0'
+
       # Version check (all build front-ends) ---------------------------------
       assert_tag_matches_plist:
         description: 'Assert the tag version == the built app CFBundleShortVersionString, failing the release before notarization if they differ. Applies to every build_kind. This is the post-build half of the gate; the pre-build half is the tag gate above.'
@@ -416,6 +422,7 @@ jobs:
           CLIPMENU_SPARKLE: ${{ inputs.swiftpm_sparkle && '1' || '' }}
           SWIFTPM_PRODUCT_NAME: ${{ inputs.swiftpm_product_name }}
           SWIFTPM_APP_NAME_TEMPLATE: ${{ inputs.swiftpm_app_name_template }}
+          BUILD_NUMBER_OFFSET: ${{ inputs.build_number_offset }}
         run: |
           set -euo pipefail
           # Mirror scripts/run.sh's bundle assembly (without launching). APP_NAME is
@@ -443,7 +450,12 @@ jobs:
           # as "Version X (build)" whenever it differs from the marketing version.
           # Requires the full-history checkout above; falls back to the marketing
           # version if git height is somehow unavailable.
-          BUILD="$(git rev-list --count HEAD 2>/dev/null || echo "$VERSION")"
+          # Sparkle compares CFBundleVersion, so this must never go backwards — see
+          # build_number_offset. `git rev-list --count` restarts at 1 in an extracted repo.
+          OFFSET="${BUILD_NUMBER_OFFSET:-0}"
+          case "$OFFSET" in ''|*[!0-9]*) echo "::error::build_number_offset must be a non-negative integer, got '$OFFSET'" >&2; exit 1;; esac
+          COUNT="$(git rev-list --count HEAD 2>/dev/null || echo "")"
+          BUILD="${COUNT:+$((COUNT + OFFSET))}"; BUILD="${BUILD:-$VERSION}"
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUILD}" "$APP/Contents/Info.plist"
           # The commit's own timestamp, which DragonKit >= 3.0.0 renders after the build
           # number: "v2.4.1 (756) · 2026-Aug-07 16:54:20 UTC". It used to read the
@@ -552,9 +564,15 @@ jobs:
         env:
           XCODE_PROJECT: ${{ inputs.xcode_project }}
           XCODE_SCHEME: ${{ inputs.xcode_scheme }}
+          BUILD_NUMBER_OFFSET: ${{ inputs.build_number_offset }}
         run: |
           set -euo pipefail
-          BUILD="$(git rev-list --count HEAD 2>/dev/null || echo '')"
+          # Sparkle compares CFBundleVersion, so this must never go backwards — see
+          # build_number_offset. `git rev-list --count` restarts at 1 in an extracted repo.
+          OFFSET="${BUILD_NUMBER_OFFSET:-0}"
+          case "$OFFSET" in ''|*[!0-9]*) echo "::error::build_number_offset must be a non-negative integer, got '$OFFSET'" >&2; exit 1;; esac
+          COUNT="$(git rev-list --count HEAD 2>/dev/null || echo '')"
+          BUILD="${COUNT:+$((COUNT + OFFSET))}"
           COMMIT_DATE="$(git log -1 --format=%cI 2>/dev/null || echo '')"
           xcodebuild build \
             -project "$XCODE_PROJECT" \
@@ -579,6 +597,7 @@ jobs:
         env:
           XCODE_PROJECT: ${{ inputs.xcode_project }}
           XCODE_SCHEME: ${{ inputs.xcode_scheme }}
+          BUILD_NUMBER_OFFSET: ${{ inputs.build_number_offset }}
           XCODE_EXPORT_OPTIONS: ${{ inputs.xcode_export_options }}
           XCODE_DEVELOPMENT_TEAM: ${{ inputs.xcode_development_team }}
         run: |
@@ -590,7 +609,12 @@ jobs:
           # setting so xcodebuild bakes it into the SIGNED bundle (editing Info.plist
           # after signing would break the signature). Falls back to the project's
           # CURRENT_PROJECT_VERSION if git height is somehow unavailable.
-          BUILD="$(git rev-list --count HEAD 2>/dev/null || echo '')"
+          # Sparkle compares CFBundleVersion, so this must never go backwards — see
+          # build_number_offset. `git rev-list --count` restarts at 1 in an extracted repo.
+          OFFSET="${BUILD_NUMBER_OFFSET:-0}"
+          case "$OFFSET" in ''|*[!0-9]*) echo "::error::build_number_offset must be a non-negative integer, got '$OFFSET'" >&2; exit 1;; esac
+          COUNT="$(git rev-list --count HEAD 2>/dev/null || echo '')"
+          BUILD="${COUNT:+$((COUNT + OFFSET))}"
           # The commit's own timestamp, rendered by DragonKit >= 3.0.0 after the build
           # number. A build setting rather than a PlistBuddy edit for the same reason as
           # CURRENT_PROJECT_VERSION above: xcodebuild hands back a SIGNED bundle, and
