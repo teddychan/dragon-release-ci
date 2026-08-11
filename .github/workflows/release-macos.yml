@@ -306,8 +306,13 @@ jobs:
           set -euo pipefail
           # Pick the newest Xcode installed on the hosted image (avoids pinning a
           # path that drifts between runner image versions).
-          latest="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)"
-          if [ -n "$latest" ]; then sudo xcode-select -s "$latest/Contents/Developer"; fi
+          #
+          # printf over the glob rather than `ls -d`, which shellcheck flags as SC2012. `sort -V`
+          # stays: the glob expands lexically, which would put Xcode_9 after Xcode_16. When
+          # nothing matches, the glob is left literal, so the test is -d (the path exists) and not
+          # -n (the string is non-empty) — the old -n was true for the unexpanded pattern.
+          latest="$(printf '%s\n' /Applications/Xcode_*.app | sort -V | tail -1)"
+          if [ -d "$latest" ]; then sudo xcode-select -s "$latest/Contents/Developer"; fi
           swift --version
           xcodebuild -version
 
@@ -414,6 +419,14 @@ jobs:
           done
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+          # shellcheck disable=SC2046 # word splitting is the point, see below
+          # `-s` REPLACES the user search list rather than adding to it, so the keychains already
+          # on it have to be handed back — as SEPARATE arguments, which is exactly the splitting
+          # SC2046 warns about. Quoting would pass every existing keychain as one argument and
+          # drop the login keychain out of the search list. An array would avoid the warning
+          # honestly, but this runs in the signing step of every release for five apps and the
+          # macOS runner's /bin/bash is 3.2, where `"${arr[@]}"` on an empty array trips `set -u`.
+          # The paths are runner-generated and contain no whitespace.
           security list-keychains -d user -s "$KEYCHAIN_PATH" \
             $(security list-keychains -d user | sed s/\"//g)
           # Use the cert's SHA-1 hash (unique) as the signing identity, not its
