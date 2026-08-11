@@ -61,8 +61,16 @@ jobs:
       - name: Tag gate
         run: ./scripts/test-tag-gate.sh
 
+      # The gate only greps the What's New source; this reads it. It decides what five apps' public
+      # releases SAY, in seven languages, on the release page and on the marketing site — and its
+      # worst failure is not a crash but publishing "app.whatsNew.summary" as visible note text.
+      # Same reasoning as above: a suite nobody runs makes a promise it does not keep.
+      - name: What's New export
+        run: python3 scripts/test-whats-new-export.py
+
       # And this proves the workflow still calls that gate in the one position where it matters,
-      # and that no publishing step can slip past the verification-only guard.
+      # that the Release body still comes from the exporter rather than from GitHub's guess at the
+      # PR titles, and that no publishing step can slip past the verification-only guard.
       - name: Workflow contract
         run: python3 scripts/test-workflow-contract.py
 

@@ -251,6 +251,7 @@ def main():
     check_secrets_are_optional(wf)
     check_build_offset_wiring(wf, steps)
     check_appcast_mirror_wiring(wf, steps)
+    check_whats_new_export_wiring(text, steps, gate_idx)
 
     print()
     print(f"{PASS} passed, {FAIL} failed")
@@ -356,6 +357,79 @@ def check_appcast_mirror_wiring(wf, steps):
           None)
     check("the appcast step is still guarded by verify_only",
           GUARD_RE.search(str(step.get("if") or "")) is not None, step.get("if"))
+
+
+def check_whats_new_export_wiring(text, steps, gate_idx):
+    """The Release body comes from the app's What's New pane, and cannot fall back to GitHub's.
+
+    `--generate-notes` summarised the PR titles since the previous tag, so every published body
+    described the commit log rather than the notes the app shows its users. The fix is only worth
+    anything if it cannot silently revert: a `|| true`, a verify-only guard on the export, or one
+    reinstated `--generate-notes` would restore the old body on the next release with a green run.
+
+    Deny-by-default, like every check here. Each assertion names a specific way this could be
+    present in the YAML and still not work.
+    """
+    exporters = [(i, s) for i, s in enumerate(steps)
+                 if "whats-new-export.py" in (s.get("run") or "")]
+    check("exactly one step runs the What's New exporter", len(exporters) == 1,
+          [step_label(i, s) for i, s in exporters])
+    if len(exporters) != 1:
+        return
+    idx, step = exporters[0]
+    body = step.get("run") or ""
+    env = step.get("env") or {}
+
+    check("the exporter is the checked-out script, not an inline copy",
+          ".release-ci/scripts/whats-new-export.py" in body, body[:200])
+    for var in ("APP_SLUG", "WHATS_NEW_PATH"):
+        check(f"the export step is passed {var}", var in env, sorted(env))
+    # VERSION/TAG/PREVIOUS_TAG are exported into $GITHUB_ENV by the gate, so they must be read as
+    # plain shell variables — and the version must come from there rather than from a second
+    # reader of Info.plist, which is how two versions of "the version" drift apart.
+    for var in ("VERSION", "TAG", "PREVIOUS_TAG"):
+        check(f"the export step consumes the gate's {var}", f"${{{var}:-}}" in body, body[:400])
+
+    if gate_idx is not None:
+        check("the gate precedes the export", idx > gate_idx, f"gate {gate_idx}, export {idx}")
+    # The whole point of exporting here is that a rejection costs nothing: at this position no
+    # certificate has been imported, nothing is built, signed, notarized or uploaded.
+    effects = [i for i, s in enumerate(steps)
+               if any(p.search(s.get("run") or "") for p in SIDE_EFFECTS.values())]
+    check("the export precedes every side-effecting step",
+          bool(effects) and idx < min(effects), f"export {idx}, first side effect {effects[:1]}")
+
+    # A check, not a side effect: it must run on a verification run too, which is the cheapest
+    # place to find a missing translation.
+    check("the export is not skipped on a verification-only run",
+          not GUARD_RE.search(str(step.get("if") or "")), f"if: {step.get('if')!r}")
+    check("the export is not made non-fatal",
+          "|| true" not in body and step.get("continue-on-error") is None,
+          f"continue-on-error={step.get('continue-on-error')!r}")
+
+    # No fallback, anywhere: one reinstated --generate-notes is the original bug back, on a green
+    # run. Scanned over the steps' shell bodies with comment lines dropped — like the
+    # job_workflow_sha check above, the comments that RECORD the mistake must stay free to name it.
+    generated = []
+    for i, s in enumerate(steps):
+        for line in (s.get("run") or "").splitlines():
+            if not line.strip().startswith("#") and "--generate-notes" in line:
+                generated.append(f"{step_label(i, s)}: {line.strip()}")
+    check("no step runs --generate-notes", not generated, "\n".join(generated))
+
+    creators = [s for s in steps if "gh release create" in (s.get("run") or "")]
+    check("some step creates the GitHub Release", len(creators) == 1, len(creators))
+    if creators:
+        create_body = creators[0].get("run") or ""
+        check("the Release body is rendered from the exported notes",
+              "--notes-file" in create_body and "RELEASE_NOTES_FILE" in create_body,
+              create_body[:300])
+
+    uploaders = [s for s in steps if "gh release upload" in (s.get("run") or "")]
+    check("some step uploads Release assets", bool(uploaders), len(uploaders))
+    check("whats-new.json is uploaded as a Release asset",
+          any("WHATS_NEW_JSON" in (s.get("run") or "") for s in uploaders),
+          "no `gh release upload` mentions $WHATS_NEW_JSON")
 
 
 if __name__ == "__main__":

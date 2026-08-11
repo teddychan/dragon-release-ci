@@ -379,6 +379,62 @@ jobs:
           set -euo pipefail
           bash .release-ci/scripts/tag-gate.sh >> "$GITHUB_ENV"
 
+      # The What's New pane IS the release notes, so both the Release body and a localized
+      # artifact are derived from it rather than from GitHub's guess at it.
+      #
+      # This replaces `gh release create --generate-notes` further down, which summarised the PR
+      # titles that landed since the previous tag: every published body reads like "docs: realign
+      # RELEASING.md with the actual release workflow · release: 2.14.6 — …". That is the commit
+      # log, not what the app tells its own users, and it is a second description of the release
+      # that nobody wrote and nobody proofread. It also emits whats-new.json carrying every
+      # language the app ships, so the marketing site can render localized notes without parsing
+      # Swift — five of these apps write their entries as `L()` keys in seven .strings files.
+      #
+      # Placed HERE, immediately after the gate and before the certificate import, for the same
+      # reason the gate is: a rejection must cost nothing. Nothing has been built, signed or
+      # notarized yet, and an unresolvable localization key is exactly the kind of thing you want
+      # to learn before a 60-minute notary round trip rather than after one.
+      #
+      # Deliberately NOT guarded by verify_only. Like the version assertion below it is a CHECK,
+      # not a side effect, and a verification run from a branch is the cheapest possible place to
+      # discover that one of seven translations is missing. TAG / VERSION / PREVIOUS_TAG arrive as
+      # real environment variables through $GITHUB_ENV from the gate, so nothing is interpolated
+      # into this shell body; VERSION is empty on a verification run with no tag, which the
+      # exporter accepts and no publishing step can then use.
+      #
+      # There is no fallback to --generate-notes if this fails. Restoring one would restore the
+      # exact bug being fixed here, invisibly, on the release where the export broke.
+      - name: Export the What's New notes (all languages)
+        env:
+          APP_SLUG: ${{ inputs.app_slug }}
+          WHATS_NEW_PATH: ${{ inputs.whats_new_path }}
+        run: |
+          set -euo pipefail
+          WN_JSON="$RUNNER_TEMP/whats-new.json"
+          WN_BODY="$RUNNER_TEMP/release-notes.md"
+          python3 --version   # stdlib only, but say which interpreter parsed the notes
+          python3 .release-ci/scripts/whats-new-export.py \
+            --app-name "$APP_SLUG" \
+            --repo-dir "$GITHUB_WORKSPACE" \
+            --whats-new-path "$WHATS_NEW_PATH" \
+            --version "${VERSION:-}" \
+            --tag "${TAG:-}" \
+            --previous-tag "${PREVIOUS_TAG:-}" \
+            --github-repo "$GITHUB_REPOSITORY" \
+            --json-out "$WN_JSON" \
+            --body-out "$WN_BODY"
+          {
+            echo "WHATS_NEW_JSON=$WN_JSON"
+            echo "RELEASE_NOTES_FILE=$WN_BODY"
+          } >> "$GITHUB_ENV"
+          # Print the body that will become the Release description. On a verification run this is
+          # the whole point of the step: the notes are reviewable before a tag exists.
+          {
+            echo "### :memo: Release notes, rendered from the What's New pane"
+            echo
+            cat "$WN_BODY"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # The Developer ID cert import has no dependency on the app existing, and
       # xcodebuild signs INSIDE the archive — it needs the keychain/identity
       # present at build time. So import the cert here, before all three build
@@ -875,9 +931,21 @@ jobs:
           set -euo pipefail
           PREFIX="$RELEASE_TITLE_PREFIX"
           if [ -n "$PREFIX" ]; then TITLE="$PREFIX $TAG"; else TITLE="$TAG"; fi
+          # --notes-file, never --generate-notes: the body is the English rendering of the app's
+          # own What's New pane, produced by the export step above (summary, then one `### Kind`
+          # heading per section with its entries, then GitHub's `**Full Changelog**` compare link
+          # — the one part of the generated notes worth keeping, since a tag-to-tag diff is
+          # genuinely useful and is not a restatement of the notes).
+          #
+          # Still create-or-skip: an existing Release keeps the body it has. Nothing here re-bodies
+          # a published release, deliberately — this change applies to future releases only, and a
+          # published Release must not be edited or re-tagged to retry.
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TITLE" --generate-notes
-          gh release upload "$TAG" "$ZIP" --repo "$GITHUB_REPOSITORY" --clobber
+            || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TITLE" \
+                 --notes-file "$RELEASE_NOTES_FILE"
+          # whats-new.json rides along as a Release asset: the notes in every language the app
+          # ships, so the marketing site reads data instead of scraping this body or parsing Swift.
+          gh release upload "$TAG" "$ZIP" "$WHATS_NEW_JSON" --repo "$GITHUB_REPOSITORY" --clobber
 
       # Deliver the auto-update: this repo's Release is the binary download source,
       # and the EdDSA-signed appcast is published to the marketing site's Pages,
