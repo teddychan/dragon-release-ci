@@ -413,11 +413,12 @@ check("the body is the English notes, in the app's order, with the compare link"
 check("the body is not GitHub's generated PR-title list",
       "generate-notes" not in body and "Full Changelog" in body, body)
 
+body_path.unlink()
 rc, _, err = run(app, "Sources/App/WhatsNewConfig.swift", "--body-out", str(body_path),
-                 "--tag", "v1.0.0", "--github-repo", "teddychan/test-app")
-first = body_path.read_text(encoding="utf-8")
+                 "--tag", "v1.2.3", "--github-repo", "teddychan/test-app")
+first = body_path.read_text(encoding="utf-8") if body_path.exists() else ""
 check("a first release omits the compare link rather than inventing a baseline",
-      rc == 0 and "Full Changelog" not in first, first)
+      rc == 0 and first and "Full Changelog" not in first, err or first)
 
 # A """ entry keeps its newlines; they must stay inside the bullet.
 multi = BASE % ('            date: "2026-01-01",\n'
@@ -432,6 +433,27 @@ rc, _, err = run(app, "Sources/App/WhatsNewConfig.swift", "--body-out", str(body
 check("a multi-line entry stays one bullet",
       rc == 0 and "- one\n  two\n" in body_path.read_text(encoding="utf-8"),
       err or body_path.read_text(encoding="utf-8"))
+
+print("-- the contract with the live marketing-site reader --")
+
+# www.dragonapp.com renders this artifact. It compares `version` to the release tag and REJECTS the
+# whole asset on a mismatch rather than publishing one version's notes under another number — so a
+# wrong version is not a visible failure, the app just quietly keeps its old row on the site.
+app = make_app(DOTTED_CONFIG, dotted_tables())
+rc, _, err = run(app, "Sources/App/WhatsNewConfig.swift", "--tag", "v9.9.9", version="1.2.3")
+check("a --version that disagrees with --tag fails", rc != 0, "exit 0")
+rc, data, err = export_json(app, "Sources/App/WhatsNewConfig.swift", "--tag", "v1.2.3",
+                            version="1.2.3")
+check("the tag's own version is accepted (a leading v is the only difference)", rc == 0, err)
+if data:
+    check("language keys are DragonKit's .lproj codes, so en and not en-US",
+          "en" in data["languages"] and not any("-US" in l for l in data["languages"]),
+          list(data["languages"]))
+    check("every emitted kind is one the schema allows",
+          all(s["kind"] in ("added", "changed", "fixed", "removed", "improved", "security")
+              for s in data["languages"]["en"]["sections"]), data["languages"]["en"])
+    check("date is still emitted even though the reader prefers the Release's published_at",
+          data["date"] == "2026-08-11", data.get("date"))
 
 print("-- verification runs (no tag) --")
 

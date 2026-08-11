@@ -382,6 +382,11 @@ def check_whats_new_export_wiring(text, steps, gate_idx):
 
     check("the exporter is the checked-out script, not an inline copy",
           ".release-ci/scripts/whats-new-export.py" in body, body[:200])
+    # `gh release upload` names an asset from the file's BASENAME, and the marketing site's reader
+    # looks for exactly `whats-new.json`. Renaming the temp file would leave a green release whose
+    # asset the site never finds, and nothing else in this pipeline would notice.
+    check("the exported JSON is written as exactly whats-new.json",
+          '"$RUNNER_TEMP/whats-new.json"' in body, body[:400])
     for var in ("APP_SLUG", "WHATS_NEW_PATH"):
         check(f"the export step is passed {var}", var in env, sorted(env))
     # VERSION/TAG/PREVIOUS_TAG are exported into $GITHUB_ENV by the gate, so they must be read as

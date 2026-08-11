@@ -110,6 +110,18 @@ export costs nothing — and produces two things:
 improved, security`). `version` is the tag gate's `VERSION`, never a second read
 of `Info.plist`, so the artifact and the tag cannot disagree.
 
+**www.dragonapp.com already reads this**, so the schema is a contract with a
+deployed consumer, not a proposal. Four things it requires, all pinned by tests:
+the asset is named exactly `whats-new.json` (`gh release upload` takes the asset
+name from the basename); `"schema"` is `1`; `version` matches the release tag —
+on a mismatch the reader **rejects the asset**, which is not a visible failure,
+the app just keeps its old row on the site, hence the tag/version agreement check
+in the exporter; and language keys are DragonKit's `.lproj` codes, `en` rather
+than `en-US`, which the site maps onto `en` itself. The reader ignores `date` in
+favour of the Release's `published_at`, and flattens each language to one prose
+line — dropping `kind` but **preserving section and entry order**, which is why
+the exporter keeps the app's order rather than the enum's.
+
 It handles all three styles the five apps actually use: `L("app.whatsNew.fixed1")`
 resolved per language from `Localizable.strings` (spectacle-2, yahoo-keykey-2,
 dragon-sample-app), `L("A full English sentence.")` where the key *is* the English

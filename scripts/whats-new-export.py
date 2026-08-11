@@ -42,6 +42,28 @@ not the enum's declaration order.
 which is derived from the tag, so this file and the version assertion cannot disagree: two
 readers of "the version" is how they drift.
 
+WHAT THE DEPLOYED READER REQUIRES
+---------------------------------
+www.dragonapp.com renders this artifact, so the schema is a contract with a live consumer rather
+than a proposal. Four requirements, each of which this file satisfies by construction:
+
+* The Release asset is named EXACTLY `whats-new.json`. `gh release upload` names an asset from the
+  file's basename, so the workflow writes `$RUNNER_TEMP/whats-new.json` and
+  scripts/test-workflow-contract.py pins that basename.
+* `"schema": 1`. Anything else and the reader keeps the site's existing entry.
+* `version` MUST match the release tag (a leading `v` is tolerated). On a mismatch the reader
+  rejects the whole asset rather than publishing one version's notes under another — so a wrong
+  version does not look broken, it silently costs the app its row on the site. Hence both the
+  X.Y.Z check and the tag/version agreement check in main().
+* Language keys are DragonKit's `.lproj` codes — `en`, not `en-US`; the site maps its own `en-US`
+  locale onto `en` itself. They come from the `.lproj` directory names, so they are those codes.
+
+Two things the reader does that are worth knowing here: it ignores `date` in favour of the
+Release's own `published_at` (a hand-written What's New date usually predates the tag by days), and
+it flattens each language to one prose line, dropping `kind` but PRESERVING section and entry
+order. So the order this file goes to some trouble to keep is load-bearing downstream; the kind
+labels are not, today.
+
 WHY THIS FAILS INSTEAD OF GUESSING
 ----------------------------------
 An unresolved localization key does not look broken. `app.whatsNew.summary` is a perfectly
@@ -653,6 +675,14 @@ def main(argv=None):
     if args.version and not VERSION_RE.match(args.version):
         fail(f"--version {args.version!r} is not X.Y.Z. It must be the tag gate's VERSION, so "
              "the artifact and the tag cannot disagree.")
+    if args.version and args.tag and args.tag.lstrip("v") != args.version:
+        # The marketing site's reader compares this field to the release tag and REJECTS the whole
+        # asset when they differ, rather than publishing one version's notes under another number.
+        # A rejected asset is not a visible failure — the app just quietly keeps its old row on the
+        # site. The two values arrive from one source (the gate derives VERSION from TAG), so a
+        # disagreement means somebody rewired the step; say so here instead of shipping it.
+        fail(f"--version {args.version!r} does not match --tag {args.tag!r}. The artifact's version "
+             "must be the tag's, or the site's reader discards the notes without publishing them.")
 
     repo_dir = Path(args.repo_dir).resolve()
     paths = split_paths(args.whats_new_path)
@@ -672,6 +702,16 @@ def main(argv=None):
                       export["languages"][DEFAULT_LANGUAGE]["sections"]) or "no sections"
     print(f"{args.app_name} {args.version or '(no tag)'}: {len(languages)} language(s) "
           f"[{' '.join(languages)}], {kinds}")
+
+    # Not a failure — a new .lproj should not block a release — but say it out loud. The site's
+    # reader maps only DragonKit's seven codes, so a language outside them is carried in the
+    # artifact and then ignored, which is the sort of thing to learn from a log rather than from
+    # a missing translation on the site.
+    extra = [l for l in languages if l not in KIT_LANGUAGES]
+    if extra:
+        print(f"::warning::{args.app_name}: {', '.join(extra)} is not one of DragonKit's "
+              f"{len(KIT_LANGUAGES)} language codes ({', '.join(KIT_LANGUAGES)}). It is exported, "
+              "but the marketing site maps only those.")
 
     if args.json_out:
         Path(args.json_out).write_text(
