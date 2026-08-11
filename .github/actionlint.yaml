@@ -1,0 +1,24 @@
+# actionlint configuration.
+#
+# Exists for one reason: actionlint's context schema is hand-maintained and does not know the
+# `job.workflow_*` group, so it reports four "property is not defined" errors for context
+# properties that are real, documented, and load-bearing here.
+#
+# release-macos.yml is a reusable workflow. The caller's checkout is the CALLER's repo, so the
+# tag-gate script is not on disk; the workflow fetches it from its OWN repo at its OWN commit via
+# `job.workflow_repository` / `job.workflow_sha`. Deleting them to satisfy the linter would make
+# the gate run from whatever is on this repo's default branch instead of the commit the caller
+# pinned — a release gate silently executing different code than the workflow around it.
+#
+# These are not taken on trust. release-macos.yml asserts both resolve non-empty before the
+# checkout and hard-fails otherwise, precisely because an undefined context property renders as
+# the empty string and actions/checkout reads an empty ref as "the default branch". Every release
+# through this workflow exercises that assertion.
+#
+# Scoped to the one file and matched on the property names, so a genuinely undefined property
+# anywhere else — or a typo like job.workflow_shaa — is still reported.
+paths:
+  .github/workflows/release-macos.yml:
+    ignore:
+      - 'property "workflow_repository" is not defined'
+      - 'property "workflow_sha" is not defined'

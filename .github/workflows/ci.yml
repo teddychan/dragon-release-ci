@@ -17,12 +17,25 @@ name: CI
 # stdlib plus PyYAML for the contract tests. Nothing here builds or signs an app, so a macOS runner
 # would only cost minutes.
 #
-# No actionlint step, and that is a deliberate omission rather than an oversight.
-# release-macos.yml carries two findings that predate this workflow — SC2012 (`ls` in the
-# Xcode-select step) and SC2046 (an unquoted `$(security list-keychains)`) — and actionlint exits
-# non-zero on them, so a lint step added here would be red on its first run for reasons no diff
-# introduced. Fixing those two belongs in its own change; a CI job that is red from day one teaches
-# everyone to ignore it, which is worse than not having it.
+# There is an actionlint step now. It was omitted deliberately when this workflow was written,
+# because release-macos.yml carried findings that predated it and a job that is red from day one
+# teaches everyone to ignore it. Those findings are fixed, so the step can be added honestly:
+#
+#   SC2012  `ls -d /Applications/Xcode_*.app` became a printf over the glob. `sort -V` stayed —
+#           lexical order puts Xcode_9 after Xcode_16 — and the guard became -d rather than -n,
+#           since an unmatched glob is left literal and so is non-empty.
+#   SC2046  the unquoted `$(security list-keychains)` splits ON PURPOSE: `-s` replaces the search
+#           list, so the existing keychains must go back as separate arguments. Documented with a
+#           scoped shellcheck disable rather than "fixed" into something that drops the login
+#           keychain.
+#   four    "property is not defined" errors for job.workflow_repository / job.workflow_sha, which
+#           are real and load-bearing — actionlint's context schema simply does not carry them.
+#           Suppressed per-file and per-property in .github/actionlint.yaml, which explains why.
+#
+# The suppression was checked for the failure mode it could introduce: with it in place actionlint
+# still reports job.workflow_shaa, job.bogus, and a newly introduced shellcheck finding elsewhere
+# in the same file. A linter that has been quieted into always passing is the same failure as a
+# gate that reports success over an unshippable build.
 on:
   push:
     branches: [main]
@@ -52,3 +65,17 @@ jobs:
       # and that no publishing step can slip past the verification-only guard.
       - name: Workflow contract
         run: python3 scripts/test-workflow-contract.py
+
+      # Last, because a lint finding never means "do not ship" the way the two suites above do.
+      # It catches the class of mistake neither of them can see: a YAML or expression error that
+      # makes a run fail at STARTUP, which produces no logs at all — the conclusion is set, the
+      # run has zero jobs, and the jobs endpoint 404s. Five apps call this workflow, so that
+      # failure arrives on a release tag, in somebody else's repository.
+      #
+      # The pinned official image, the same shape as ice-2's swiftlint job, rather than the
+      # upstream curl-into-bash installer. It carries shellcheck, which is where four of the six
+      # findings this change fixed came from. Pinned to an exact version and not :latest, because
+      # actionlint's context schema is hand-maintained — an upgrade can start reporting properties
+      # that were fine yesterday, and that should happen on a deliberate bump, not on a Tuesday.
+      - name: actionlint
+        run: docker run --rm -v "$PWD:$PWD" -w "$PWD" rhysd/actionlint:1.7.12 -color
