@@ -83,10 +83,15 @@ on:
 
       # swiftpm front-end (clipmenu-2) ---------------------------------------
       swiftpm_working_directory:
-        description: 'Directory holding Package.swift / Info.plist for the swiftpm build'
+        description: 'Directory holding Package.swift for the swiftpm build'
         type: string
         required: false
         default: 'app'
+      swiftpm_bundle_inputs_directory:
+        description: 'Directory (repo-root-relative) holding the bundle inputs the swiftpm assembly copies — Info.plist and, when the app ships one, AppIcon.icns. DragonKit CONFORMANCE §R16 puts these in App/, which is not where Package.swift lives. Empty = read them from swiftpm_working_directory, the behaviour before this input existed.'
+        type: string
+        required: false
+        default: ''
       swiftpm_sparkle:
         description: 'Set CLIPMENU_SPARKLE=1 for the swiftpm build (embed Sparkle)'
         type: boolean
@@ -515,13 +520,31 @@ jobs:
           SWIFTPM_PRODUCT_NAME: ${{ inputs.swiftpm_product_name }}
           SWIFTPM_APP_NAME_TEMPLATE: ${{ inputs.swiftpm_app_name_template }}
           BUILD_NUMBER_OFFSET: ${{ inputs.build_number_offset }}
+          BUNDLE_INPUTS_DIRECTORY: ${{ inputs.swiftpm_bundle_inputs_directory }}
         run: |
           set -euo pipefail
           # Mirror scripts/run.sh's bundle assembly (without launching). APP_NAME is
           # rendered from swiftpm_app_name_template ({MAJOR}/{VERSION} substituted);
           # for ClipMenu that is "ClipMenu 2".
           BIN_PATH="$(swift build -c release --show-bin-path)"
-          VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)"
+          # Where Info.plist and AppIcon.icns are READ from. This step used to read them from the
+          # SwiftPM working directory — the one holding Package.swift — which silently required a
+          # repository to keep its bundle inputs beside its manifest. DragonKit CONFORMANCE §R16
+          # puts them in `App/` at the repo root instead, for every app whatever builds it, so the
+          # two directories are no longer the same one. Empty reproduces the old behaviour exactly,
+          # for a caller that has not migrated.
+          INPUTS="${PWD}"
+          if [ -n "${BUNDLE_INPUTS_DIRECTORY}" ]; then
+            INPUTS="${GITHUB_WORKSPACE}/${BUNDLE_INPUTS_DIRECTORY}"
+          fi
+          # Fail here rather than three commands later. PlistBuddy prints "File Doesn't Exist" on
+          # stdout and exits 0, so a wrong directory used to surface as an empty VERSION and a
+          # bundle assembled with no identity at all — a release, signed and notarized.
+          if [ ! -f "$INPUTS/Info.plist" ]; then
+            echo "::error::No Info.plist in ${INPUTS}. §R16 puts it in App/ — point swiftpm_bundle_inputs_directory at that directory (repo-root-relative)." >&2
+            exit 1
+          fi
+          VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INPUTS/Info.plist")"
           MAJOR="${VERSION%%.*}"
           PRODUCT="$SWIFTPM_PRODUCT_NAME"
           APP_NAME="$SWIFTPM_APP_NAME_TEMPLATE"
@@ -532,7 +555,7 @@ jobs:
           rm -rf "$APP"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           cp "$BIN_PATH/$PRODUCT" "$APP/Contents/MacOS/$PRODUCT"
-          cp Info.plist "$APP/Contents/Info.plist"
+          cp "$INPUTS/Info.plist" "$APP/Contents/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable ${PRODUCT}" "$APP/Contents/Info.plist" 2>/dev/null \
             || /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string ${PRODUCT}" "$APP/Contents/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleName ${APP_NAME}" "$APP/Contents/Info.plist"
@@ -561,8 +584,9 @@ jobs:
               || /usr/libexec/PlistBuddy -c "Add :DragonCommitDate string ${COMMIT_DATE}" "$APP/Contents/Info.plist"
           fi
           # App icon is optional: ClipMenu ships AppIcon.icns; the sample app defers
-          # a custom icon and falls back to the system default.
-          [ -f AppIcon.icns ] && cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns" || true
+          # a custom icon and falls back to the system default. §R16 checks the icon
+          # positionally for the same reason — an app without one is not asked to invent one.
+          [ -f "$INPUTS/AppIcon.icns" ] && cp "$INPUTS/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns" || true
 
           # Copy every SwiftPM resource bundle (ClipMenu_ClipMenu.bundle, plus any
           # dependency's, e.g. DragonKit_DragonKit.bundle with the kit's localized

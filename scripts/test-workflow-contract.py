@@ -250,6 +250,7 @@ def main():
     check_no_run_interpolation(steps)
     check_secrets_are_optional(wf)
     check_build_offset_wiring(wf, steps)
+    check_bundle_inputs_wiring(wf, steps)
     check_appcast_mirror_wiring(wf, steps)
     check_whats_new_export_wiring(text, steps, gate_idx)
 
@@ -297,6 +298,39 @@ def check_build_offset_wiring(wf, steps):
     for s in readers:
         check(f"step '{s.get('name')}' gets BUILD_NUMBER_OFFSET via env",
               "BUILD_NUMBER_OFFSET" in (s.get("env") or {}), sorted((s.get("env") or {})))
+
+
+def check_bundle_inputs_wiring(wf, steps):
+    """The swiftpm assembly reads Info.plist / AppIcon.icns from ONE resolved directory.
+
+    It used to read them from the SwiftPM working directory, which quietly required every caller to
+    keep its bundle inputs beside `Package.swift`. DragonKit CONFORMANCE §R16 moves them to `App/`
+    at the repo root, so `swiftpm_bundle_inputs_directory` says where they are.
+
+    Two failure modes, both silent, both pinned here. An empty default is the compatibility
+    contract: the four existing callers pass nothing, and any other default would redirect all of
+    them at once to a directory that may not exist. And a later edit adding a bare `cp Info.plist`
+    back — the spelling every one of these lines had until this change — would resurrect the
+    coupling for that one file only, which no test would otherwise see because the *other* reads
+    still work. So every read in the step must be path-qualified.
+    """
+    ins = (wf.get(ON_KEY) or {}).get("workflow_call", {}).get("inputs") or {}
+    spec = ins.get("swiftpm_bundle_inputs_directory")
+    check("input 'swiftpm_bundle_inputs_directory' exists", spec is not None, sorted(ins)[:5])
+    if spec is not None:
+        check("...and defaults to '' so an unmigrated caller keeps today's behaviour",
+              spec.get("default") == "", spec)
+    assemble = [s for s in steps if "Assemble .app bundle [swiftpm]" in (s.get("name") or "")]
+    check("the swiftpm assembly step is still named as this test expects", len(assemble) == 1,
+          [s.get("name") for s in steps][:8])
+    for step in assemble:
+        check("assembly gets BUNDLE_INPUTS_DIRECTORY via env",
+              "BUNDLE_INPUTS_DIRECTORY" in (step.get("env") or {}), sorted(step.get("env") or {}))
+        # Comments and the `::error::` message name the file in prose; only commands matter.
+        bare = [line.strip() for line in (step.get("run") or "").splitlines()
+                if not line.lstrip().startswith(("#", "echo"))
+                and re.search(r"(?<![/\w])(?:Info\.plist|AppIcon\.icns)", line)]
+        check("every bundle-input read in the assembly is path-qualified", not bare, bare)
 
 
 def check_appcast_mirror_wiring(wf, steps):
