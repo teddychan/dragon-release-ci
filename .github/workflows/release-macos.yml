@@ -251,6 +251,7 @@ on:
 
 permissions:
   contents: write   # upload assets / create the release on the caller repo
+  pull-requests: write   # appcast and cask land via a PR this workflow merges itself
 
 jobs:
   build:
