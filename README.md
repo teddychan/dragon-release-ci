@@ -5,7 +5,8 @@ Shared GitHub Actions release pipeline for the public macOS Dragon-App repos.
 `.github/workflows/release-macos.yml` is a **reusable workflow** (`workflow_call`)
 that gates the release, builds, code-signs (Developer ID + hardened runtime),
 notarizes, staples, and publishes a macOS app, then publishes the EdDSA-signed
-Sparkle appcast and bumps the Homebrew cask.
+Sparkle appcast, bumps the Homebrew cask, and dispatches the marketing site's
+changelog refresh.
 
 ## Callers
 
@@ -17,9 +18,13 @@ Each app repo has a thin `release.yml` that calls this on a `v*` tag:
 | `ice-2`           | `xcodebuild` |
 | `spectacle-2`     | `swiftpm`    |
 | `yahoo-keykey-2`  | `script`     |
+| `dragon-sample-app` | `swiftpm`  |
 
-`clipmenu-2-premium` does **not** use this — it builds the Mac App Store variant
-on its own self-hosted runner.
+`clipmenu-2-premium` is retired from the release path — it publishes no release,
+appcast, or cask. The Mac App Store build is produced by `clipmenu-2` itself, via
+its own `.github/workflows/release-mas.yml`, which is `workflow_dispatch` only and
+takes an already-existing exact public `vX.Y.Z` tag as input: pushing a tag never
+triggers it, and not every release is submitted to the Mac App Store.
 
 ## Usage
 
