@@ -1154,6 +1154,33 @@ jobs:
             -e "s/^  version \".*\"/  version \"${VERSION}\"/" \
             -e "s/^  sha256 \".*\"/  sha256 \"${SHA}\"/" \
             "$CASK"
+          # Both patterns above are anchored to exactly two leading spaces, and sed exits 0 when
+          # it matches nothing. So a reformatted cask — `brew style --fix`, a re-indent, `version`
+          # on a different line shape, `sha256 arm:`/`intel:` instead of one string — leaves the
+          # file untouched, stages nothing, takes the "cask already at" branch below and records
+          # outcome=published over a cask that still names the PREVIOUS version. That green run is
+          # a lie: it opens the site-dispatch gate, and since those changelog PRs auto-merge,
+          # www.dragonapp.com would advertise a version `brew upgrade` cannot install — the exact
+          # failure that gate exists to prevent, arriving through a different door. So read the
+          # file back and require both target lines before claiming anything.
+          #
+          # sha256 gets the same treatment as version, not because the same reformat could hide
+          # from one pattern and not the other, but because a HALF-matched rewrite is its own
+          # failure: bump the version while the old sha256 line stays put and the cask IS staged,
+          # so the PR opens, auto-merges, and every `brew upgrade` dies on a checksum mismatch.
+          # The version check cannot see that case, and nothing downstream reviews the diff.
+          #
+          # -F because the version's dots are regex metacharacters: `2.1.0` would otherwise match
+          # a cask reading `2X1Y0`. And a hard failure rather than give_up(): a tap this step can
+          # no longer edit is a bug someone must go fix, not a release to shrug through.
+          require_cask_line() {
+            if ! grep -Fq "$1" "$CASK"; then
+              echo "::error::Casks/${APP_SLUG}.rb has no line '$1' after the rewrite — the tap's formatting no longer matches this step's sed patterns, so the bump was a silent no-op. Fix the cask, or the patterns here." >&2
+              exit 1
+            fi
+          }
+          require_cask_line "  version \"${VERSION}\""
+          require_cask_line "  sha256 \"${SHA}\""
           ( cd "$TAP_DIR"
             git config user.name "$BOT_NAME"
             git config user.email "$BOT_EMAIL"
