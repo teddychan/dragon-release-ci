@@ -254,6 +254,7 @@ def main():
     check_appcast_mirror_wiring(wf, steps)
     check_whats_new_export_wiring(text, steps, gate_idx)
     check_cask_gates_the_site_dispatch(steps)
+    check_cask_bump_cannot_silently_no_op(steps)
 
     print()
     print(f"{PASS} passed, {FAIL} failed")
@@ -559,6 +560,102 @@ def check_cask_gates_the_site_dispatch(steps):
     check("the dispatch's own token is withheld unless the cask published, too",
           bool(tokens) and all(re.search(ref, v) for v in tokens),
           "\n".join(tokens) or "the dispatch step passes no secret to withhold")
+
+
+def check_cask_bump_cannot_silently_no_op(steps):
+    """The cask step must prove the recipe carries this version before reporting success.
+
+    check_cask_gates_the_site_dispatch above stops the dispatch when the cask step SAYS it gave up.
+    This one stops it saying it published when it did not. The bump is a `sed -i` whose patterns are
+    anchored to exactly two leading spaces, and sed exits 0 when it matches nothing: reformat the
+    tap's cask — `brew style --fix`, a re-indent, `sha256 arm:`/`intel:` in place of one string —
+    and the rewrite becomes a no-op, `git diff --cached --quiet` finds nothing staged, the step
+    takes its "cask already at" branch and records outcome=published over a cask still naming the
+    PREVIOUS version. The gate then opens for a release Homebrew never got, which is the failure it
+    exists to prevent reached by a different route. So the file is read back afterwards.
+
+    Deny-by-default, and fail-CLOSED: every assertion below names a way the read-back could be
+    present in the YAML and still not stop a bad release. `-F` is part of the contract, not a
+    stylistic detail — the version's dots are regex metacharacters, so a basic-regex grep for
+    `2.1.0` is satisfied by a cask reading `2X1Y0`. So is the hard exit: a give_up() here would
+    record the very outcome that lets the dispatch through.
+
+    The step is located by its shell body via SIDE_EFFECTS["homebrew"], as the check above does, so
+    renaming it cannot quietly retire this. Comment lines are dropped before scanning for shell
+    constructs — like the job_workflow_sha, --generate-notes and `exit 0` checks, the comments that
+    RECORD this mistake must stay free to name it, `::error::` and `-F` included.
+    """
+    hits = [(i, s) for i, s in enumerate(steps)
+            if SIDE_EFFECTS["homebrew"].search(s.get("run") or "")]
+    check("exactly one step writes the Homebrew cask (read-back check)", len(hits) == 1,
+          [step_label(i, s) for i, s in hits])
+    if len(hits) != 1:
+        return
+    lines = [l for l in (hits[0][1].get("run") or "").splitlines()
+             if not l.lstrip().startswith("#")]
+    code = "\n".join(lines)
+
+    def line_of(pattern):
+        return next((n for n, l in enumerate(lines) if re.search(pattern, l)), None)
+
+    # The premise. If the rewrite is no longer a sed, the anchoring this check guards against is
+    # gone too, and the assertions below would be pinning a hazard that no longer exists.
+    sed = line_of(r"sed -i")
+    check("the cask bump still rewrites the recipe with sed", sed is not None,
+          "no `sed -i` in the cask step — has the bump been rewritten? revisit this check")
+
+    # The read-back itself: a FIXED-STRING, quiet grep of the recipe. Dropping -F, or grepping
+    # something other than "$CASK", fails here.
+    verify = line_of(r'grep\s+-(?:[A-Za-z]*F[A-Za-z]*q|[A-Za-z]*q[A-Za-z]*F)[A-Za-z]*\s.*"\$CASK"')
+    check("the cask is read back with a fixed-string (-F) grep after the rewrite",
+          verify is not None,
+          "no `grep -Fq ... \"$CASK\"` in the cask step: a sed that matched nothing exits 0, so "
+          "without this the step reports published over an unchanged cask")
+
+    # Asserted through one helper, factored like give_up() and publish_appcast_to for the same
+    # reason: two hand-written grep/error blocks is how one of them loses the exit.
+    needles = re.findall(r'^\s*require_cask_line\s+"(.*)"\s*$', code, re.M)
+    check("the read-back goes through one shared helper, called for each field",
+          len(needles) == 2, needles)
+    check("...one call requires the version being released", any("${VERSION}" in n for n in needles),
+          needles)
+    # Not redundant with the version call: a reformat that hides only the sha256 pattern still
+    # STAGES the version bump, so the PR opens and auto-merges, and `brew upgrade` then dies on a
+    # checksum mismatch against the previous build's sha. The version check cannot see that.
+    check("...the other requires the sha256 just computed for this zip",
+          any("${SHA}" in n for n in needles), needles)
+
+    helper = re.search(r"^require_cask_line\(\)\s*\{(.*?)^\}$", code, re.S | re.M)
+    check("the helper is defined in the cask step's own shell", helper is not None,
+          "no `require_cask_line() { ... }` block")
+    if helper is not None:
+        hb = helper.group(1)
+        # A reformatted tap is a bug someone must fix, so this fails the run. Softened to a
+        # warning, or routed through give_up(), it would report an outcome and carry on: give_up
+        # records gave-up, which is honest but wrong here, and a bare warning + exit 0 would fall
+        # through to outcome=published, which is the lie this whole check exists to catch.
+        check("a failed read-back is an ::error::, not a warning", "::error::" in hb, hb.strip())
+        check("...and is not softened to a ::warning::", "::warning::" not in hb, hb.strip())
+        check("...and exits nonzero rather than continuing to outcome=published",
+              re.search(r"\bexit\s+[1-9][0-9]*\b", hb) is not None
+              and re.search(r"\bexit\s+0\b", hb) is None, hb.strip())
+        check("...and does not route through give_up(), which would record an outcome and pass",
+              "give_up" not in hb, hb.strip())
+
+    # Position: after the rewrite it verifies, and before anything is staged, committed or
+    # reported. Verifying after the commit would still publish; verifying before the sed would
+    # check the state the sed was meant to change.
+    calls = [n for n, l in enumerate(lines) if re.search(r"^\s*require_cask_line\s+\"", l)]
+    staged = line_of(r"\bgit add\b")
+    published = line_of(r"outcome=published")
+    check("the tap staging and the published outcome are both still recognised",
+          staged is not None and published is not None, f"git add {staged}, published {published}")
+    if calls and sed is not None and staged is not None and published is not None:
+        check("the read-back runs after the sed it verifies", min(calls) > sed,
+              f"sed at {sed}, first read-back at {min(calls)}")
+        check("...and before the bump is staged or reported published",
+              max(calls) < staged and max(calls) < published,
+              f"last read-back at {max(calls)}, git add at {staged}, published at {published}")
 
 
 if __name__ == "__main__":
