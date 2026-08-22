@@ -253,6 +253,7 @@ def main():
     check_bundle_inputs_wiring(wf, steps)
     check_appcast_mirror_wiring(wf, steps)
     check_whats_new_export_wiring(text, steps, gate_idx)
+    check_cask_gates_the_site_dispatch(steps)
 
     print()
     print(f"{PASS} passed, {FAIL} failed")
@@ -469,6 +470,95 @@ def check_whats_new_export_wiring(text, steps, gate_idx):
     check("whats-new.json is uploaded as a Release asset",
           any("WHATS_NEW_JSON" in (s.get("run") or "") for s in uploaders),
           "no `gh release upload` mentions $WHATS_NEW_JSON")
+
+
+def check_cask_gates_the_site_dispatch(steps):
+    """The site changelog refresh must not fire for a release Homebrew never got.
+
+    Every other check here is a property of ONE step. This one is a relationship between two,
+    because that is what the failure is. The cask step has three green give-up paths — no token,
+    the Release asset not live yet, the tap not clonable — each a `::warning::` and an `exit 0`.
+    The site dispatch then ran regardless, so www.dragonapp.com would advertise a version
+    `brew upgrade` could not install. That used to be caught downstream: the site's refresh
+    opened a PR a human read before merging. It now auto-merges, so between this step and the
+    published page there is nothing that looks at the diff. The condition IS the reviewer.
+
+    Deny-by-default like the rest of the file, and fail-CLOSED specifically. The comparison is
+    pinned to equality against a success value the step can actually emit, not to `!= 'gave-up'`:
+    an unset output — a fourth give-up path that forgets to record one, a step that dies before
+    it does, a renamed id — reads as the empty string, which PASSES `!= 'gave-up'` and fails
+    `== 'published'`. Only one of those two spellings fails safe, so which one is used is itself
+    part of the contract.
+
+    Both steps are located by their shell bodies, via the same SIDE_EFFECTS patterns used above,
+    so renaming either step cannot quietly retire this check.
+    """
+    cask_hits = [(i, s) for i, s in enumerate(steps)
+                 if SIDE_EFFECTS["homebrew"].search(s.get("run") or "")]
+    disp_hits = [(i, s) for i, s in enumerate(steps)
+                 if SIDE_EFFECTS["site_dispatch"].search(s.get("run") or "")]
+    check("exactly one step writes the Homebrew cask", len(cask_hits) == 1,
+          [step_label(i, s) for i, s in cask_hits])
+    check("exactly one step dispatches to the marketing site", len(disp_hits) == 1,
+          [step_label(i, s) for i, s in disp_hits])
+    if len(cask_hits) != 1 or len(disp_hits) != 1:
+        return
+    (cask_idx, cask), (disp_idx, disp) = cask_hits[0], disp_hits[0]
+    body = cask.get("run") or ""
+
+    check("the cask step runs before the site dispatch", cask_idx < disp_idx,
+          f"cask at {cask_idx}, dispatch at {disp_idx}")
+
+    step_id = cask.get("id")
+    check("the cask step carries an id: for its outcome to be referenced through",
+          bool(step_id), f"id={step_id!r} — without one no `if:` can read its outputs")
+
+    # Read out of the shell rather than assumed, so the condition below is checked against the
+    # values this workflow can really emit. A typo'd `outcome=publsihed` fails here, not in prod.
+    emitted = set(re.findall(r'outcome=([A-Za-z0-9_-]+)"?\s*>>\s*"?\$\{?GITHUB_OUTPUT', body))
+    check("the cask step records its outcome on $GITHUB_OUTPUT", bool(emitted),
+          "no `outcome=... >> $GITHUB_OUTPUT` in the cask step's run:")
+    check("it records at least two outcomes, so the gate cannot be a constant",
+          len(emitted) >= 2, sorted(emitted))
+
+    # One exit per give-up, factored like publish_appcast_to above: three hand-written
+    # `::warning::` + `exit 0` blocks is how the fourth one forgets to record the outcome, and an
+    # unrecorded give-up is exactly the half-shipped release this check exists to stop.
+    calls = re.findall(r"^\s*give_up\s+[\"']", body, re.M)
+    check("give-ups leave through one shared helper, called more than once", len(calls) >= 2,
+          f"{len(calls)} call(s) to give_up")
+    # Comment lines dropped, like the job_workflow_sha and --generate-notes checks above: the
+    # comments that RECORD this mistake have to stay free to name it. `echo` lines are NOT
+    # dropped — `echo "::warning::…"; exit 0` on one line is the exact shape being outlawed.
+    outside = [line.strip() for line
+               in re.sub(r"^give_up\(\)\s*\{.*?^\}$", "", body, flags=re.S | re.M).splitlines()
+               if re.search(r"\bexit 0\b", line) and not line.lstrip().startswith("#")]
+    check("no path in the cask step exits 0 outside that helper", not outside,
+          "\n".join(outside) or None)
+
+    if not step_id or not emitted:
+        return
+    ref = rf"steps\.{re.escape(step_id)}\.outputs\.outcome"
+    cond = str(disp.get("if") or "")
+    check("the site dispatch is still guarded by verify_only",
+          GUARD_RE.search(cond) is not None, f"if: {cond!r}")
+    check("the site dispatch's if: reads the cask step's outcome",
+          re.search(ref, cond) is not None,
+          f"if: {cond!r} — nothing stops a dispatch for a cask that gave up")
+    matched = sorted(v for v in emitted if re.search(rf"{ref}\s*==\s*'{re.escape(v)}'", cond))
+    check("...compared by equality against an outcome the step emits (so it fails closed)",
+          len(matched) == 1, f"if: {cond!r} vs emitted {sorted(emitted)}")
+    check("...and not by `!=`, which an unset or misspelt outcome would pass",
+          re.search(rf"{ref}\s*!=", cond) is None, f"if: {cond!r}")
+
+    # The second layer check_credential_starvation applies to verify_only, for the same reason:
+    # if someone deletes the `if:`, the token still renders empty and the step's own "not set"
+    # branch fires, so a gave-up cask cannot dispatch even with the guard gone.
+    tokens = [str(v) for v in (disp.get("env") or {}).values()
+              if "secrets." in str(v) or "github.token" in str(v)]
+    check("the dispatch's own token is withheld unless the cask published, too",
+          bool(tokens) and all(re.search(ref, v) for v in tokens),
+          "\n".join(tokens) or "the dispatch step passes no secret to withhold")
 
 
 if __name__ == "__main__":
