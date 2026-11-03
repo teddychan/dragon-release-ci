@@ -168,6 +168,23 @@ body on a re-run.
 | `release_tag` | string | `''` | For a manual dispatch, where the ref is a branch: names an **already existing** exact public `vX.Y.Z` tag. The whole job then checks out *that commit*, so the build is the tagged code and not the branch head. |
 | `verify_only` | boolean | `false` | Run the gate and the build, then stop. See below. |
 
+## The Release body is the CHANGELOG.md entry
+
+The What's New pane is a short in-app summary, and the body rendered from it came
+out shorter than the changelog (Spectacle 2 v2.7.0). So the step after the export,
+`scripts/changelog-notes.py`, replaces the body with the version's `CHANGELOG.md`
+entry: the text under the `## ` heading for exactly `VERSION`, up to the next one,
+with hard-wrapped paragraphs and list items unwrapped (GitHub turns a single newline
+in a Release body into a line break). It reads every heading style the apps use,
+`## 2.22.0 (date)`, `## 2.16.3 - date`, `## [2.8.0] - date` and a bare `## 2.17.0`,
+and `2.8.0` never matches `2.8.01` or `12.8.0`. The exporter's `**Full Changelog**`
+link is appended unchanged.
+
+`whats-new.json` still comes from the pane; only the body moved. A repo with no
+`CHANGELOG.md` (dragon-sample-app) keeps the pane's body, with a notice, and so does
+a verification run with no tag. A `CHANGELOG.md` with no entry for the version
+fails the run before anything is signed.
+
 ## Verification-only runs
 
 `verify_only: true` is the "or run as verification-only" half of the lifecycle
@@ -227,6 +244,17 @@ the cask step skips later.
 The token reaches git only through `GIT_CONFIG_*` environment variables, scoped
 to `https://github.com/`. It is never on a command line, in a remote URL or on disk.
 
+## Marketing site dispatch
+
+The last publishing step, `scripts/site-dispatch.sh`, asks www.dragonapp.com to
+refresh its changelog. A non-204 answer fails the step, and so does a 204 after
+which no `repository_dispatch` run appears on the site within 60 seconds (checked
+through the site repo's public Actions API). Either failure prints `::error::` and
+writes it to the run summary. It used to be a warning on a green step, and Spectacle
+2 v2.7.0 and v2.8.0 both got HTTP 403 there unnoticed. The Release, the appcast and
+the cask are already published when it runs, so a red run here never half-ships a
+release. An unset token and an app with no page on the site still skip, as before.
+
 ## App Store submission (`scripts/asc-submit.py`)
 
 `clipmenu-2`'s `release-mas.yml` uploads the Mac App Store `.pkg`. This script
@@ -276,6 +304,8 @@ JWT reaches `curl` on stdin, never on its command line, and is never printed.
 ./scripts/test-tag-gate.sh                    # the gate's own rejections
 ./scripts/test-tap-token-preflight.sh         # a dead tap token stops the run (stub git, offline)
 python3 scripts/test-whats-new-export.py      # the notes export, all three styles
+python3 scripts/test-changelog-notes.py       # the Release body from CHANGELOG.md, every heading style
+./scripts/test-site-dispatch.sh               # a failed site dispatch turns the run red (stub curl, offline)
 python3 scripts/test-workflow-contract.py     # the workflow still runs both correctly
 python3 scripts/test-asc-submit.py            # App Store submission against a fake API
 ```
@@ -289,7 +319,7 @@ scripts checkout uses `job.workflow_sha` + `job.workflow_repository`, and no ste
 interpolates `${{ ... }}` into a `run:` body. Every check is deny-by-default: a
 pattern that matches nothing fails rather than passes quietly.
 
-`ci.yml` runs all five on every PR, plus `actionlint`.
+`ci.yml` runs all seven on every PR, plus `actionlint`.
 
 To see what a real app would publish, run the exporter against its clone:
 

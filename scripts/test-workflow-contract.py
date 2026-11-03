@@ -40,7 +40,7 @@ SIDE_EFFECTS = {
     "upload": re.compile(r"gh release (create|upload)"),
     "appcast": re.compile(r"generate_appcast"),
     "homebrew": re.compile(r"Casks/"),
-    "site_dispatch": re.compile(r"/dispatches"),
+    "site_dispatch": re.compile(r"/dispatches|scripts/site-dispatch\.sh"),
     "git_push": re.compile(r"git push"),
     "credentials": re.compile(r"security create-keychain|security import"),
 }
@@ -253,6 +253,8 @@ def main():
     check_bundle_inputs_wiring(wf, steps)
     check_appcast_mirror_wiring(wf, steps)
     check_whats_new_export_wiring(text, steps, gate_idx)
+    check_changelog_notes_wiring(steps)
+    check_site_dispatch_fails_loudly(steps)
     check_cask_gates_the_site_dispatch(steps)
     check_cask_bump_cannot_silently_no_op(steps)
     check_tap_token_preflight(steps, gate_idx)
@@ -472,6 +474,70 @@ def check_whats_new_export_wiring(text, steps, gate_idx):
     check("whats-new.json is uploaded as a Release asset",
           any("WHATS_NEW_JSON" in (s.get("run") or "") for s in uploaders),
           "no `gh release upload` mentions $WHATS_NEW_JSON")
+
+
+def check_changelog_notes_wiring(steps):
+    """The Release body is the version's CHANGELOG.md entry, rendered after the What's New export.
+
+    It runs after the exporter because it takes the exporter's body as its fallback and its compare
+    link, and before every side effect because a missing entry must fail while failing is free.
+    """
+    hits = [(i, s) for i, s in enumerate(steps)
+            if "changelog-notes.py" in (s.get("run") or "")]
+    check("exactly one step renders the Release notes from CHANGELOG.md", len(hits) == 1,
+          [step_label(i, s) for i, s in hits])
+    if len(hits) != 1:
+        return
+    idx, step = hits[0]
+    body = step.get("run") or ""
+    check("the changelog renderer is the checked-out script, not an inline copy",
+          ".release-ci/scripts/changelog-notes.py" in body, body[:200])
+    check("it reads the app checkout's CHANGELOG.md",
+          '"$GITHUB_WORKSPACE/CHANGELOG.md"' in body, body[:400])
+    check("it consumes the gate's VERSION", "${VERSION:-}" in body, body[:400])
+    check("it starts from the exporter's body",
+          '--whats-new-body "$RELEASE_NOTES_FILE"' in body, body[:400])
+    check("it hands its body to the upload as RELEASE_NOTES_FILE",
+          re.search(r'echo "RELEASE_NOTES_FILE=\$\w+" >> "\$GITHUB_ENV"', body) is not None,
+          body)
+
+    exporters = [i for i, s in enumerate(steps) if "whats-new-export.py" in (s.get("run") or "")]
+    check("the What's New export precedes it", bool(exporters) and exporters[0] < idx,
+          f"export {exporters}, changelog notes {idx}")
+    effects = [i for i, s in enumerate(steps)
+               if any(p.search(s.get("run") or "") for p in SIDE_EFFECTS.values())]
+    check("it precedes every side-effecting step",
+          bool(effects) and idx < min(effects), f"notes {idx}, first side effect {effects[:1]}")
+    check("it is not skipped on a verification-only run",
+          not GUARD_RE.search(str(step.get("if") or "")), f"if: {step.get('if')!r}")
+    check("it is not made non-fatal",
+          "|| true" not in body and step.get("continue-on-error") is None,
+          f"continue-on-error={step.get('continue-on-error')!r}")
+
+
+def check_site_dispatch_fails_loudly(steps):
+    """A failed marketing-site dispatch turns the run red, and can only do so after publishing.
+
+    It was a `::warning::` on a green step, and Spectacle 2 v2.7.0 and v2.8.0 both got HTTP 403
+    there unnoticed. Failing is only safe while it is the last side effect: a red step earlier
+    would stop a release halfway.
+    """
+    hits = [(i, s) for i, s in enumerate(steps)
+            if SIDE_EFFECTS["site_dispatch"].search(s.get("run") or "")]
+    if len(hits) != 1:
+        return  # check_cask_gates_the_site_dispatch reports the count
+    idx, step = hits[0]
+    body = step.get("run") or ""
+    check("the site dispatch runs the checked-out script, which fails on a dead dispatch",
+          ".release-ci/scripts/site-dispatch.sh" in body, body[:300])
+    check("the site dispatch is not made non-fatal",
+          "|| true" not in body and step.get("continue-on-error") is None,
+          f"continue-on-error={step.get('continue-on-error')!r}")
+    others = [(i, s) for i, s in enumerate(steps) if i != idx
+              and any(p.search(s.get("run") or "") for p in SIDE_EFFECTS.values())]
+    check("the site dispatch is the last side-effecting step",
+          bool(others) and max(i for i, _ in others) < idx,
+          [step_label(i, s) for i, s in others if i > idx])
 
 
 def check_cask_gates_the_site_dispatch(steps):
