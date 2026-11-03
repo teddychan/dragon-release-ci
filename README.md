@@ -227,6 +227,49 @@ the cask step skips later.
 The token reaches git only through `GIT_CONFIG_*` environment variables, scoped
 to `https://github.com/`. It is never on a command line, in a remote URL or on disk.
 
+## App Store submission (`scripts/asc-submit.py`)
+
+`clipmenu-2`'s `release-mas.yml` uploads the Mac App Store `.pkg`. This script
+does what a person used to do in App Store Connect afterwards:
+
+```bash
+ASC_KEY_ID=… ASC_ISSUER_ID=… ASC_KEY_P8=/path/to/AuthKey_….p8 \
+  python3 scripts/asc-submit.py --bundle-id com.dragonapp.clipmenu-2 --version 2.23.0 \
+    --whats-new https://github.com/teddychan/clipmenu-2-macos/releases/download/v2.23.0/whats-new.json \
+    --dry-run
+```
+
+1. Finds the app, then finds or creates the `MAC_OS` version `X.Y.Z` with
+   release type `AFTER_APPROVAL`.
+2. Checks that every store locale has notes in `whats-new.json` and that App
+   Review contact first name, last name, email and phone are filled. A gap stops
+   the run with a message naming it; the script never invents values.
+3. Waits for a `VALID` build of `X.Y.Z` (60 minutes by default,
+   `--build-timeout-minutes`) and attaches it.
+4. Sets What's New on every store locale: the summary, a blank line, then one
+   `• entry` line per entry. Store locales map to the app's languages as
+   `en-US`→`en`, `fr-FR`→`fr`, `es-ES`→`es`, and `ja`, `ko`, `zh-Hans`,
+   `zh-Hant`, `ru` as themselves. A store locale with no notes is an error.
+5. Submits: a `MAC_OS` review submission holding the version, then
+   `submitted=true`.
+
+Each step reads before it writes, so a re-run after any failure picks up where
+the last one stopped. A version already `WAITING_FOR_REVIEW`, `IN_REVIEW` or
+later is reported and left alone (exit 0). A rejected version stops with exit 1,
+because resubmitting after a rejection is a person's call.
+
+`--dry-run` prints every write it would make and makes none. `--whats-new`
+takes a local path or the release asset URL.
+
+**The API key needs the App Manager role.** A Developer key can read everything
+this script reads, but App Store Connect answers every write with
+`403 FORBIDDEN_ERROR`. Keys are created under Users and Access → Integrations →
+App Store Connect API.
+
+Stdlib only. The ES256 JWT is signed by `openssl` and requests go through
+`curl`, because python.org's Python on macOS ships without CA certificates. The
+JWT reaches `curl` on stdin, never on its command line, and is never printed.
+
 ## Tests
 
 ```bash
@@ -234,6 +277,7 @@ to `https://github.com/`. It is never on a command line, in a remote URL or on d
 ./scripts/test-tap-token-preflight.sh         # a dead tap token stops the run (stub git, offline)
 python3 scripts/test-whats-new-export.py      # the notes export, all three styles
 python3 scripts/test-workflow-contract.py     # the workflow still runs both correctly
+python3 scripts/test-asc-submit.py            # App Store submission against a fake API
 ```
 
 The last one parses `release-macos.yml` and asserts the properties that a
@@ -245,7 +289,7 @@ scripts checkout uses `job.workflow_sha` + `job.workflow_repository`, and no ste
 interpolates `${{ ... }}` into a `run:` body. Every check is deny-by-default: a
 pattern that matches nothing fails rather than passes quietly.
 
-`ci.yml` runs all four on every PR, plus `actionlint`.
+`ci.yml` runs all five on every PR, plus `actionlint`.
 
 To see what a real app would publish, run the exporter against its clone:
 
