@@ -61,6 +61,11 @@ jobs:
       - name: Tag gate
         run: ./scripts/test-tag-gate.sh
 
+      # A dead PUBLIC_RELEASE_TOKEN must stop a release before anything is published. Offline: a
+      # stub git plays GitHub, so no token is involved.
+      - name: Homebrew tap token pre-flight
+        run: ./scripts/test-tap-token-preflight.sh
+
       # The gate only greps the What's New source; this reads it. It decides what five apps' public
       # releases SAY, in seven languages, on the release page and on the marketing site — and its
       # worst failure is not a crash but publishing "app.whatsNew.summary" as visible note text.
@@ -73,6 +78,10 @@ jobs:
       # PR titles, and that no publishing step can slip past the verification-only guard.
       - name: Workflow contract
         run: python3 scripts/test-workflow-contract.py
+
+      # The App Store submitter, against a fake transport: no network and no key.
+      - name: App Store submission
+        run: python3 scripts/test-asc-submit.py
 
       # Last, because a lint finding never means "do not ship" the way the two suites above do.
       # It catches the class of mistake neither of them can see: a YAML or expression error that

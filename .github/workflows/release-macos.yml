@@ -385,6 +385,17 @@ jobs:
           set -euo pipefail
           bash .release-ci/scripts/tag-gate.sh >> "$GITHUB_ENV"
 
+      # The cask bump is the last publishing step, so a dead PUBLIC_RELEASE_TOKEN used to fail
+      # only after the GitHub Release and the appcast were public: ClipMenu v2.22.0 on 2026-11-03
+      # published both, then stopped at "Bump Homebrew cask" with "Invalid username or token".
+      # Proving the token can push to the tap HERE, before the certificate import, turns that
+      # half-published release into a free failure. An unset token still only warns, as before.
+      - name: Check PUBLIC_RELEASE_TOKEN can push to the Homebrew tap
+        if: ${{ !inputs.verify_only }}
+        env:
+          PUBLIC_RELEASE_TOKEN: ${{ !inputs.verify_only && secrets.PUBLIC_RELEASE_TOKEN || '' }}
+        run: bash .release-ci/scripts/tap-token-preflight.sh
+
       # The What's New pane IS the release notes, so both the Release body and a localized
       # artifact are derived from it rather than from GitHub's guess at it.
       #
