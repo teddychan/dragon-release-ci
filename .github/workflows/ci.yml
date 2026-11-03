@@ -73,6 +73,15 @@ jobs:
       - name: What's New export
         run: python3 scripts/test-whats-new-export.py
 
+      # The Release body is the version's CHANGELOG.md entry, found and unwrapped by this script, in
+      # each heading style the five apps use.
+      - name: CHANGELOG release notes
+        run: python3 scripts/test-changelog-notes.py
+
+      # A failed marketing-site dispatch must turn the run red. Offline: a stub curl plays GitHub.
+      - name: Marketing site dispatch
+        run: ./scripts/test-site-dispatch.sh
+
       # And this proves the workflow still calls that gate in the one position where it matters,
       # that the Release body still comes from the exporter rather than from GitHub's guess at the
       # PR titles, and that no publishing step can slip past the verification-only guard.
