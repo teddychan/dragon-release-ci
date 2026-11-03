@@ -208,24 +208,44 @@ For `xcodebuild` callers the verification build compiles the same scheme and
 configuration with signing disabled, because `xcodebuild archive` signs inside
 the archive and cannot produce an unsigned artifact.
 
+## Homebrew tap token pre-flight
+
+The cask bump is the last publishing step, so a dead `PUBLIC_RELEASE_TOKEN` used
+to fail only after the GitHub Release and the Sparkle appcast were public. That
+leaves a half-published release whose only remedy is a fresh version.
+
+On a publishing run, `scripts/tap-token-preflight.sh` runs right after the tag
+gate and before the certificate import. It clones `teddychan/homebrew-tap` with
+the token and runs `git push --dry-run` to a throwaway branch name. GitHub serves
+the receive-pack ref advertisement only to a credential that can write, so a
+token without write access gets a 403 and an invalid or expired one fails at the
+clone. A dry run sends nothing and creates no branch. On failure the step prints
+`::error::` with git's reason and the remedy (rotate the token), and the run stops
+before anything is signed. An unset token keeps the old behaviour: a warning, and
+the cask step skips later.
+
+The token reaches git only through `GIT_CONFIG_*` environment variables, scoped
+to `https://github.com/`. It is never on a command line, in a remote URL or on disk.
+
 ## Tests
 
 ```bash
 ./scripts/test-tag-gate.sh                    # the gate's own rejections
+./scripts/test-tap-token-preflight.sh         # a dead tap token stops the run (stub git, offline)
 python3 scripts/test-whats-new-export.py      # the notes export, all three styles
 python3 scripts/test-workflow-contract.py     # the workflow still runs both correctly
 ```
 
 The last one parses `release-macos.yml` and asserts the properties that a
 reviewer stops catching in a 900-line file: the gate precedes the export and the
-export precedes every sign/archive/notarize/upload/appcast/Homebrew/site-dispatch
-step, each of those carries the verify-only guard and withholds its secrets, the
+tap token pre-flight, and both precede every
+sign/archive/notarize/upload/appcast/Homebrew/site-dispatch step, each of those carries the verify-only guard and withholds its secrets, the
 Release body comes from `--notes-file` and no step runs `--generate-notes`, the
 scripts checkout uses `job.workflow_sha` + `job.workflow_repository`, and no step
 interpolates `${{ ... }}` into a `run:` body. Every check is deny-by-default: a
 pattern that matches nothing fails rather than passes quietly.
 
-`ci.yml` runs all three on every PR, plus `actionlint`.
+`ci.yml` runs all four on every PR, plus `actionlint`.
 
 To see what a real app would publish, run the exporter against its clone:
 

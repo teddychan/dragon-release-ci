@@ -255,6 +255,7 @@ def main():
     check_whats_new_export_wiring(text, steps, gate_idx)
     check_cask_gates_the_site_dispatch(steps)
     check_cask_bump_cannot_silently_no_op(steps)
+    check_tap_token_preflight(steps, gate_idx)
 
     print()
     print(f"{PASS} passed, {FAIL} failed")
@@ -656,6 +657,37 @@ def check_cask_bump_cannot_silently_no_op(steps):
         check("...and before the bump is staged or reported published",
               max(calls) < staged and max(calls) < published,
               f"last read-back at {max(calls)}, git add at {staged}, published at {published}")
+
+
+def check_tap_token_preflight(steps, gate_idx):
+    """A dead PUBLIC_RELEASE_TOKEN must stop the run before anything is published.
+
+    ClipMenu v2.22.0 published its Release and appcast, then failed at the cask bump on a dead
+    token. The pre-flight only prevents that while it sits after the gate and ahead of every side
+    effect, and only while a failure is fatal.
+    """
+    hits = [(i, s) for i, s in enumerate(steps)
+            if ".release-ci/scripts/tap-token-preflight.sh" in (s.get("run") or "")]
+    check("exactly one step runs the tap token pre-flight", len(hits) == 1,
+          [step_label(i, s) for i, s in hits])
+    if len(hits) != 1:
+        return
+    idx, step = hits[0]
+    if gate_idx is not None:
+        check("the gate precedes the tap token pre-flight", idx > gate_idx,
+              f"gate {gate_idx}, pre-flight {idx}")
+    effects = [i for i, s in enumerate(steps)
+               if any(p.search(s.get("run") or "") for p in SIDE_EFFECTS.values())]
+    check("the tap token pre-flight precedes every side-effecting step",
+          bool(effects) and idx < min(effects), f"pre-flight {idx}, first side effect {effects[:1]}")
+    check("the tap token pre-flight is passed PUBLIC_RELEASE_TOKEN",
+          "secrets.PUBLIC_RELEASE_TOKEN" in str((step.get("env") or {}).get("PUBLIC_RELEASE_TOKEN")),
+          step.get("env"))
+    check("the tap token pre-flight is skipped on a verification-only run",
+          bool(GUARD_RE.search(str(step.get("if") or ""))), f"if: {step.get('if')!r}")
+    check("the tap token pre-flight is not made non-fatal",
+          "|| true" not in (step.get("run") or "") and step.get("continue-on-error") is None,
+          f"continue-on-error={step.get('continue-on-error')!r}")
 
 
 if __name__ == "__main__":
