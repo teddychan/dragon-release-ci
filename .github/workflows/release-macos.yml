@@ -396,8 +396,9 @@ jobs:
           PUBLIC_RELEASE_TOKEN: ${{ !inputs.verify_only && secrets.PUBLIC_RELEASE_TOKEN || '' }}
         run: bash .release-ci/scripts/tap-token-preflight.sh
 
-      # The What's New pane IS the release notes, so both the Release body and a localized
-      # artifact are derived from it rather than from GitHub's guess at it.
+      # The What's New pane is the source of whats-new.json, the localized notes the marketing site
+      # reads. Its English rendering is also the Release body for an app with no CHANGELOG.md; the
+      # next step replaces that body with the version's changelog entry wherever there is one.
       #
       # This replaces `gh release create --generate-notes` further down, which summarised the PR
       # titles that landed since the previous tag: every published body reads like "docs: realign
@@ -444,12 +445,30 @@ jobs:
             echo "WHATS_NEW_JSON=$WN_JSON"
             echo "RELEASE_NOTES_FILE=$WN_BODY"
           } >> "$GITHUB_ENV"
+
+      # The Release notes are the version's CHANGELOG.md entry. The pane is a short in-app summary,
+      # and Spectacle 2 v2.7.0's pane-rendered body left out most of what its changelog said. The
+      # compare link is taken from the exporter's body above, so it has one author.
+      #
+      # A CHANGELOG.md with no entry for VERSION fails here, before anything is signed, for the
+      # export's reasons. A repo with no CHANGELOG.md (dragon-sample-app) keeps the pane's body, and
+      # so does a verification run with no tag. Unguarded by verify_only, like the export.
+      - name: Release notes from CHANGELOG.md
+        run: |
+          set -euo pipefail
+          NOTES="$RUNNER_TEMP/release-notes-changelog.md"
+          python3 .release-ci/scripts/changelog-notes.py \
+            --changelog "$GITHUB_WORKSPACE/CHANGELOG.md" \
+            --version "${VERSION:-}" \
+            --whats-new-body "$RELEASE_NOTES_FILE" \
+            --out "$NOTES"
+          echo "RELEASE_NOTES_FILE=$NOTES" >> "$GITHUB_ENV"
           # Print the body that will become the Release description. On a verification run this is
           # the whole point of the step: the notes are reviewable before a tag exists.
           {
-            echo "### :memo: Release notes, rendered from the What's New pane"
+            echo "### :memo: Release notes"
             echo
-            cat "$WN_BODY"
+            cat "$NOTES"
           } >> "$GITHUB_STEP_SUMMARY"
 
       # The Developer ID cert import has no dependency on the app existing, and
@@ -968,11 +987,11 @@ jobs:
           set -euo pipefail
           PREFIX="$RELEASE_TITLE_PREFIX"
           if [ -n "$PREFIX" ]; then TITLE="$PREFIX $TAG"; else TITLE="$TAG"; fi
-          # --notes-file, never --generate-notes: the body is the English rendering of the app's
-          # own What's New pane, produced by the export step above (summary, then one `### Kind`
-          # heading per section with its entries, then GitHub's `**Full Changelog**` compare link
-          # — the one part of the generated notes worth keeping, since a tag-to-tag diff is
-          # genuinely useful and is not a restatement of the notes).
+          # --notes-file, never --generate-notes: the body is the version's CHANGELOG.md entry, or
+          # the English rendering of the What's New pane for an app with no CHANGELOG.md, produced
+          # by the two notes steps above. Either way it ends in GitHub's `**Full Changelog**`
+          # compare link — the one part of the generated notes worth keeping, since a tag-to-tag
+          # diff is genuinely useful and is not a restatement of the notes.
           #
           # Still create-or-skip: an existing Release keeps the body it has. Nothing here re-bodies
           # a published release, deliberately — this change applies to future releases only, and a
@@ -1236,6 +1255,11 @@ jobs:
       # Sends no client_payload: the site workflow needs none, and omitting it
       # keeps attacker-settable input out of that workflow entirely.
       #
+      # A failed dispatch turns this step red: a non-204, or a 204 after which no site run starts
+      # within 60 s. It used to be a `::warning::` on a green step, and Spectacle 2 v2.7.0 and
+      # v2.8.0 both got HTTP 403 here unnoticed. It is the last publishing step, so a red run here
+      # leaves the Release, the appcast and the cask published. See scripts/site-dispatch.sh.
+      #
       # Gated on the cask step's own report, not merely on the release having got this far. The
       # cask bump exits 0 on three give-up paths, so a green run is not evidence Homebrew has
       # this version — and the site's refresh no longer opens a PR anyone reads, it auto-merges.
@@ -1247,36 +1271,7 @@ jobs:
         env:
           PUBLIC_RELEASE_TOKEN: ${{ !inputs.verify_only && steps.cask.outputs.outcome == 'published' && secrets.PUBLIC_RELEASE_TOKEN || '' }}
           APP_SLUG: ${{ inputs.app_slug }}
-        run: |
-          set -euo pipefail
-          if [ -z "${PUBLIC_RELEASE_TOKEN:-}" ]; then
-            echo "::warning::PUBLIC_RELEASE_TOKEN not set — skipping site changelog refresh."; exit 0
-          fi
-          IDX="$(curl -sS -H 'Accept: application/vnd.github.raw' \
-            -H "Authorization: Bearer ${PUBLIC_RELEASE_TOKEN}" \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            'https://api.github.com/repos/teddychan/www.dragonapp.com/contents/i18n/apps/_index.json' \
-            || true)"
-          case "$IDX" in
-            *"\"${APP_SLUG}\""*) : ;;
-            *)
-              echo "${APP_SLUG} has no page on www.dragonapp.com — nothing to refresh."
-              exit 0 ;;
-          esac
-          # Never fail an already-shipped release over a site nudge; the site
-          # also refreshes on a weekly cron and can be run by hand.
-          CODE="$(curl -sS -o "$RUNNER_TEMP/dispatch.out" -w '%{http_code}' -X POST \
-            -H 'Accept: application/vnd.github+json' \
-            -H "Authorization: Bearer ${PUBLIC_RELEASE_TOKEN}" \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            'https://api.github.com/repos/teddychan/www.dragonapp.com/dispatches' \
-            -d '{"event_type":"app-released"}')" || CODE=000
-          if [ "$CODE" = "204" ]; then
-            echo "Asked www.dragonapp.com to refresh its changelog."
-          else
-            echo "::warning::changelog refresh dispatch returned HTTP ${CODE}; the site's weekly cron will catch up."
-            cat "$RUNNER_TEMP/dispatch.out" 2>/dev/null || true
-          fi
+        run: bash .release-ci/scripts/site-dispatch.sh
 
       # A verification run's log otherwise ends in a column of grey "skipped" steps, which reads
       # the same as a run that failed to do its job. Say what actually happened.
