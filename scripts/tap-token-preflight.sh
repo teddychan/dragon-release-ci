@@ -21,7 +21,7 @@
 set -euo pipefail
 
 TAP_REPO="${TAP_REPO:-teddychan/homebrew-tap}"
-REMEDY="Rotate the PUBLIC_RELEASE_TOKEN secret: a fine-grained PAT with Contents and Pull requests read and write on ${TAP_REPO} (keys README, \"GitHub PAT handling\"). Nothing has been signed or published yet."
+REMEDY="Rotate the PUBLIC_RELEASE_TOKEN secret: a fine-grained PAT with Contents and Pull requests read and write on ${TAP_REPO}, then set it again in every app repo that releases. Nothing has been signed or published yet."
 
 if [ -z "${PUBLIC_RELEASE_TOKEN:-}" ]; then
   echo "::warning::PUBLIC_RELEASE_TOKEN not set. The release will publish, but the Homebrew cask bump will be skipped."
