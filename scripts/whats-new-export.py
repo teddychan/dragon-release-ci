@@ -84,11 +84,11 @@ THE THREE SOURCE STYLES, all real, all verified against the app at its released 
   it. Includes `\"\"\"` blocks with `\\`-at-end-of-line continuations, which is how ice-2's summary
   is written.
 
-Languages are the seven the kit ships (en, es, fr, ja, ko, zh-Hans, zh-Hant), and only the ones
+Languages are the eight the kit ships (en, es, fr, ja, ko, ru, zh-Hans, zh-Hant), and only the ones
 the app actually has: ice-2 emits `en` alone. They are discovered from `*.lproj/Localizable.strings`
 under the config file's own directory, unioned with any strings file named in `whats_new_path`.
 Discovery is scoped to that directory on purpose — yahoo-keykey-2 vendors the whole kit at
-vendor/dragon-kit, whose seven tables do not contain the app's keys, and a repo-wide glob would
+vendor/dragon-kit, whose tables do not contain the app's keys, and a repo-wide glob would
 "discover" five languages that do not exist and then fail every KeyKey release.
 
 Run:
@@ -106,9 +106,9 @@ from pathlib import Path
 
 SCHEMA_VERSION = 1
 
-# DragonKit's seven. The order is the kit's own; it decides the key order in the JSON so a diff of
+# DragonKit's eight, as `DragonLanguage` lists them since 4.2.0. The order is the kit's own; it decides the key order in the JSON so a diff of
 # two exports is readable.
-KIT_LANGUAGES = ("en", "es", "fr", "ja", "ko", "zh-Hans", "zh-Hant")
+KIT_LANGUAGES = ("en", "es", "fr", "ja", "ko", "ru", "zh-Hans", "zh-Hant")
 DEFAULT_LANGUAGE = "en"
 
 # DragonKit's ChangeSection.Kind, exhaustively. A seventh kind added to the kit must fail here
@@ -615,7 +615,7 @@ def build_export(app, version, notes, tables, languages):
 
 
 def order_languages(found):
-    """The kit's seven first, in the kit's order, then anything else alphabetically.
+    """The kit's languages first, in the kit's order, then anything else alphabetically.
 
     English is always present: it is `default_language`, every consumer falls back to it, and for
     the two English-authored styles it needs no table at all.
@@ -704,7 +704,7 @@ def main(argv=None):
           f"[{' '.join(languages)}], {kinds}")
 
     # Not a failure — a new .lproj should not block a release — but say it out loud. The site's
-    # reader maps only DragonKit's seven codes, so a language outside them is carried in the
+    # reader maps only DragonKit's codes, so a language outside them is carried in the
     # artifact and then ignored, which is the sort of thing to learn from a log rather than from
     # a missing translation on the site.
     extra = [l for l in languages if l not in KIT_LANGUAGES]

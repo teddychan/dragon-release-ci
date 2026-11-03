@@ -76,7 +76,7 @@ def make_app(config_src, tables=None, *, config="Sources/App/WhatsNewConfig.swif
     return root
 
 
-SEVEN = ("en", "es", "fr", "ja", "ko", "zh-Hans", "zh-Hant")
+KIT = ("en", "es", "fr", "ja", "ko", "ru", "zh-Hans", "zh-Hant")
 
 # --- style 1: abstract dotted keys (spectacle-2, yahoo-keykey-2, dragon-sample-app) ----------
 DOTTED_CONFIG = """\
@@ -107,7 +107,7 @@ DOTTED_KEYS = ("app.whatsNew.summary", "app.whatsNew.fixed1", "app.whatsNew.fixe
                "app.whatsNew.changed1")
 
 
-def dotted_tables(langs=SEVEN, omit=(), lang_omit=None):
+def dotted_tables(langs=KIT, omit=(), lang_omit=None):
     tables = {}
     for lang in langs:
         pairs = {}
@@ -120,19 +120,19 @@ def dotted_tables(langs=SEVEN, omit=(), lang_omit=None):
 
 
 print("whats-new-export.py")
-print("-- style 1: abstract dotted keys, seven languages --")
+print("-- style 1: abstract dotted keys, the kit's eight languages --")
 
 app = make_app(DOTTED_CONFIG, dotted_tables())
 rc, data, err = export_json(app, "Sources/App/WhatsNewConfig.swift")
-check("a seven-language dotted-key app exports cleanly", rc == 0, err)
+check("an eight-language dotted-key app exports cleanly", rc == 0, err)
 if data:
     check("schema is 1", data.get("schema") == 1, data.get("schema"))
     check("app and version come from the caller",
           (data["app"], data["version"]) == ("test-app", "1.2.3"), data)
     check("date comes from the config", data["date"] == "2026-08-11", data["date"])
     check("default_language is en", data["default_language"] == "en", data)
-    check("all seven languages, in the kit's order",
-          list(data["languages"]) == list(SEVEN), list(data["languages"]))
+    check("all eight languages, in the kit's order",
+          list(data["languages"]) == list(KIT), list(data["languages"]))
     en = data["languages"]["en"]
     check("summary resolves from the table", en["summary"] == "en:summary", en["summary"])
     check("section order is the app's, not the enum's",
@@ -175,7 +175,7 @@ write(app / "vendor/dragon-kit/Sources/DragonKit/Resources/de.lproj/Localizable.
       strings_file({"DragonKit.about.title": "Über"}))
 rc, data, err = export_json(app, "Sources/App/WhatsNewConfig.swift")
 check("a vendored table outside the config's directory is not discovered",
-      rc == 0 and list(data["languages"]) == list(SEVEN), err or list(data["languages"]))
+      rc == 0 and list(data["languages"]) == list(KIT), err or list(data["languages"]))
 
 print("-- style 2: the key IS the English sentence (clipmenu-2) --")
 
@@ -201,11 +201,11 @@ enum WhatsNewConfig {
 """ % (SENTENCE_SUMMARY, SENTENCE)
 
 full = {lang: {SENTENCE_SUMMARY: f"{lang} summary", SENTENCE: f"{lang} sentence"}
-        for lang in SEVEN}
+        for lang in KIT}
 full["en"] = {SENTENCE_SUMMARY: SENTENCE_SUMMARY, SENTENCE: SENTENCE}
 app = make_app(SENTENCE_CONFIG, full)
 rc, data, err = export_json(app, "Sources/App/WhatsNewConfig.swift")
-check("sentence keys resolve in all seven languages", rc == 0, err)
+check("sentence keys resolve in all eight languages", rc == 0, err)
 if data:
     check("English is the sentence itself",
           data["languages"]["en"]["sections"][0]["entries"] == [SENTENCE], data["languages"]["en"])
@@ -277,7 +277,7 @@ if data:
 
 # A bare literal in an app that DOES ship tables is passthrough, not a failure: the app itself
 # shows that English text in every language, and the export mirrors the pane.
-app = make_app(LITERAL_CONFIG, {lang: {"unused.key": "x"} for lang in SEVEN})
+app = make_app(LITERAL_CONFIG, {lang: {"unused.key": "x"} for lang in KIT})
 rc, data, err = export_json(app, "Sources/App/WhatsNewConfig.swift")
 check("bare literals pass through to every language the app ships",
       rc == 0 and data["languages"]["ja"]["sections"][1]["entries"]
@@ -454,6 +454,18 @@ if data:
               for s in data["languages"]["en"]["sections"]), data["languages"]["en"])
     check("date is still emitted even though the reader prefers the Release's published_at",
           data["date"] == "2026-08-11", data.get("date"))
+
+print("-- languages outside the kit --")
+
+app = make_app(DOTTED_CONFIG, dotted_tables())
+rc, out, err = run(app, "Sources/App/WhatsNewConfig.swift")
+check("ru is one of the kit's languages, so it exports without a warning",
+      rc == 0 and "::warning::" not in out, out + err)
+
+app = make_app(DOTTED_CONFIG, dotted_tables(langs=KIT + ("de",)))
+rc, out, err = run(app, "Sources/App/WhatsNewConfig.swift")
+check("a language the kit lacks is exported with a warning naming it",
+      rc == 0 and "::warning::test-app: de is not one of DragonKit's 8 language codes" in out, out + err)
 
 print("-- verification runs (no tag) --")
 
