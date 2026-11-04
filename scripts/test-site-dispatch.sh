@@ -107,7 +107,9 @@ expect "...in the run summary too" "$(has "$(cat "$SUMMARY")" "no site workflow 
 expect "...and does not mistake the older run for this one" "$(lacks "$OUT" "https://github.com/site/runs/1")"
 
 run env STUB_DISPATCH_CODE=204 STUB_RUN_CREATED=2026-11-03T11:00:20Z STUB_RUNS_CODE=403
-expect "a runs listing the API refuses fails the step, naming its code" "$([ $RC -eq 1 ] && has "$OUT" "Actions API answered HTTP 403" || echo 0)"
+expect "a runs listing the API always refuses warns instead of failing, naming its code" "$([ $RC -eq 0 ] && [ "$(has "$OUT" "::warning::")$(has "$OUT" "Actions API answered HTTP 403")" = 11 ] && echo 1 || echo 0)"
+expect "...and says the refresh is unconfirmed, not failed" "$([ "$(has "$OUT" "could not be confirmed")$(lacks "$OUT" "::error::")" = 11 ] && echo 1 || echo 0)"
+expect "...in the run summary too" "$(has "$(cat "$SUMMARY")" "refresh not confirmed")"
 
 run env STUB_DISPATCH_CODE=204 STUB_RUN_CREATED=2026-11-03T11:00:20Z STUB_RUN_FROM_CALL=3 SITE_RUN_WAIT=30
 expect "a run that appears on a later poll passes" "$([ $RC -eq 0 ] && [ "$(cat "$STUB_DIR/calls")" = 3 ] && echo 1 || echo 0)"
