@@ -80,6 +80,7 @@ PY
 echo "Dispatched app-released to ${SITE_REPO} at ${SINCE} (less 5 s); waiting up to ${WAIT} s for its run."
 
 LAST=""
+READ_RUNS=0
 deadline=$((SECONDS + WAIT))
 while :; do
   sleep "$POLL"
@@ -87,6 +88,7 @@ while :; do
     -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' \
     "${API}/actions/runs?event=repository_dispatch&per_page=20")" || RUNS_CODE=000
   if [ "$RUNS_CODE" = "200" ]; then
+    READ_RUNS=1
     URL="$(python3 - "$work/runs.json" "$SINCE" <<'PY'
 import json, sys
 runs = json.load(open(sys.argv[1], encoding="utf-8")).get("workflow_runs", [])
@@ -99,8 +101,20 @@ PY
     fi
     LAST="no repository_dispatch run created since ${SINCE}"
   else
-    LAST="the Actions API answered HTTP ${RUNS_CODE}"
+    LAST="the Actions API answered HTTP ${RUNS_CODE}: $(head -c 300 "$work/runs.json" 2>/dev/null | tr '\n' ' ')"
   fi
   [ "$SECONDS" -lt "$deadline" ] || break
 done
+# The listing is read without a token, and GitHub caps anonymous API calls per IP, which the shared
+# macOS runners hit when several apps release together (ClipMenu 2.22.2 and Ice 2.17.1, 2026-11-04,
+# while the site did refresh). A listing that never answered proves nothing either way, so it warns;
+# a listing that answered without the new run is a real miss and fails.
+if [ "$READ_RUNS" = 0 ]; then
+  MSG="The site changelog dispatch to ${SITE_REPO} returned 204, but its run could not be confirmed within ${WAIT} s (${LAST}). Check the site's Actions tab that a Refresh changelogs run started."
+  echo "::warning::${MSG}"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    printf '### :warning: www.dragonapp.com refresh not confirmed\n\n%s\n' "$MSG" >>"$GITHUB_STEP_SUMMARY"
+  fi
+  exit 0
+fi
 fail "The site changelog dispatch to ${SITE_REPO} returned 204, but no site workflow run started within ${WAIT} s (${LAST}). Check that the site's workflow is enabled and listens for repository_dispatch type app-released. ${AFTERMATH}"
