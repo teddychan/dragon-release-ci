@@ -451,8 +451,8 @@ jobs:
       # compare link is taken from the exporter's body above, so it has one author.
       #
       # A CHANGELOG.md with no entry for VERSION fails here, before anything is signed, for the
-      # export's reasons. A repo with no CHANGELOG.md (dragon-sample-app) keeps the pane's body, and
-      # so does a verification run with no tag. Unguarded by verify_only, like the export.
+      # export's reasons. A repo with no CHANGELOG.md keeps the pane's body, and so does a
+      # verification run with no tag. Unguarded by verify_only, like the export.
       - name: Release notes from CHANGELOG.md
         run: |
           set -euo pipefail
