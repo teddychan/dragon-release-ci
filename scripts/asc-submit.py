@@ -5,7 +5,8 @@ release-mas.yml uploads the .pkg; this does what a person used to do in App Stor
 afterwards. Every step reads before it writes, so a re-run after any failure converges:
 
   1. find the app; find or create the MAC_OS appStoreVersion X.Y.Z, releaseType AFTER_APPROVAL
-  2. check every store locale has notes in whats-new.json, and that the review contact is complete
+  2. pick each store locale's notes from whats-new.json (English when its language has none),
+     and check that the review contact is complete
   3. wait (bounded) for a VALID build of X.Y.Z and attach it
   4. set whatsNew on every appStoreVersionLocalization
   5. submit: a MAC_OS reviewSubmission holding this version, then submitted=true
@@ -52,6 +53,8 @@ STORE_LOCALE_TO_LANGUAGE = {
     "en-US": "en", "fr-FR": "fr", "es-ES": "es", "ja": "ja", "ko": "ko",
     "zh-Hans": "zh-Hans", "zh-Hant": "zh-Hant", "ru": "ru",
 }
+# whats-new-export.py always writes English as "en" (its default_language).
+FALLBACK_LANGUAGE = "en"
 
 REVIEW_CONTACT_FIELDS = ("contactFirstName", "contactLastName", "contactEmail", "contactPhone")
 
@@ -188,15 +191,22 @@ def render_notes(lang):
     return "\n".join(lines).strip()
 
 
-def plan_whats_new(localizations, languages):
-    """{localization id: (locale, text)} for every store locale, or Stop naming every gap."""
+def plan_whats_new(localizations, languages, out):
+    """{localization id: (locale, text)} for every store locale, or Stop naming every gap.
+
+    A store locale with no language mapping, or whose language has no notes, gets the English
+    notes; only missing English stops the run.
+    """
     plan, problems = {}, []
     for loc in localizations:
         locale = loc["attributes"]["locale"]
         lang = STORE_LOCALE_TO_LANGUAGE.get(locale)
-        if lang is None:
-            problems.append(f"store locale {locale} has no language mapping")
-        elif lang not in languages:
+        if lang is None or lang not in languages:
+            gap = "no language mapping" if lang is None else f"no '{lang}' notes in whats-new.json"
+            lang = FALLBACK_LANGUAGE
+            if lang in languages:
+                out(f"What's New {locale}: {gap}, using the English notes")
+        if lang not in languages:
             problems.append(f"store locale {locale} needs '{lang}' notes, absent from whats-new.json")
         else:
             text = render_notes(languages[lang])
@@ -254,7 +264,7 @@ def submit(api, args, languages_loader, sleep, clock, out):
                             limit=200) or []
     if not localizations:
         raise Stop(f"Version {args.version} has no store localizations to fill.")
-    notes = plan_whats_new(localizations, languages)
+    notes = plan_whats_new(localizations, languages, out)
 
     detail = api.get(f"/v1/appStoreVersions/{version_id}/appStoreReviewDetail")
     attrs = (detail or {}).get("attributes") or {}

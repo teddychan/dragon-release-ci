@@ -256,14 +256,44 @@ def test_missing_contact():
 
 
 def test_missing_locale_notes():
-    print("a store locale with no notes is an error, not a skip")
+    print("a store locale with no notes gets the English notes")
     fake = FakeASC(locales=STORE_LOCALES + ["de-DE"])
     rc, out = run(fake, notes=whats_new(langs=[l for l in LANGS if l != "ko"]))
+    check("exit 0", rc == 0, out)
+    notes = fake.notes()
+    check("ko and de-DE get the en notes", notes["ko"] == notes["de-DE"] == notes["en-US"], notes)
+    check("other locales keep their own language", notes["ja"].startswith("ja summary."), notes)
+    check("says ko used the English fallback",
+          "What's New ko: no 'ko' notes in whats-new.json, using the English notes" in out, out)
+    check("says de-DE used the English fallback",
+          "What's New de-DE: no language mapping, using the English notes" in out, out)
+    check("names no fallback for a locale that has its own notes", "ja: no" not in out, out)
+    check("the version is submitted", fake.version()["appVersionState"] == "WAITING_FOR_REVIEW", out)
+
+
+def test_missing_english_notes():
+    print("a store locale that needs English stops the run when English is absent")
+    fake = FakeASC(locales=STORE_LOCALES + ["de-DE"])
+    rc, out = run(fake, notes=whats_new(langs=[l for l in LANGS if l not in ("en", "ko")]))
     check("exit 1", rc == 1, out)
-    check("names the locale whose language is missing", "store locale ko needs 'ko' notes" in out, out)
-    check("names the locale with no mapping", "store locale de-DE has no language mapping" in out, out)
+    for locale in ("en-US", "ko", "de-DE"):
+        check(f"names {locale}", f"store locale {locale} needs 'en' notes" in out, out)
     check("no What's New is written", not any("Localizations" in w[1] for w in fake.writes),
           fake.writes)
+    check("nothing is submitted", not fake.submissions, fake.submissions)
+
+
+def test_fallback_notes_over_the_limit():
+    print("the 4000-character limit applies to English notes used as a fallback")
+    langs = [l for l in LANGS if l != "ko"]
+    notes = whats_new(langs=langs)
+    notes["languages"]["en"]["summary"] = "x" * 4001
+    fake = FakeASC()
+    rc, out = run(fake, notes=notes)
+    check("exit 1", rc == 1, out)
+    length = len(asc.render_notes(notes["languages"]["en"]))
+    check("names the fallback locale's length",
+          f"ko notes are {length} characters; the limit is 4000" in out, out)
     check("nothing is submitted", not fake.submissions, fake.submissions)
 
 
@@ -347,6 +377,7 @@ def main():
     print("asc-submit.py")
     for test in (test_new_version, test_existing_draft_is_corrected, test_already_submitted,
                  test_rejected_needs_a_person, test_missing_contact, test_missing_locale_notes,
+                 test_missing_english_notes, test_fallback_notes_over_the_limit,
                  test_notes_for_another_version, test_dry_run, test_build_wait_is_bounded,
                  test_jwt_verifies, test_missing_credentials):
         test()

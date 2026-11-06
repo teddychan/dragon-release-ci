@@ -274,7 +274,7 @@ ASC_KEY_ID=… ASC_ISSUER_ID=… ASC_KEY_P8=/path/to/AuthKey_….p8 \
 
 1. Finds the app, then finds or creates the `MAC_OS` version `X.Y.Z` with
    release type `AFTER_APPROVAL`.
-2. Checks that every store locale has notes in `whats-new.json` and that App
+2. Picks each store locale's notes from `whats-new.json` and checks that App
    Review contact first name, last name, email and phone are filled. A gap stops
    the run with a message naming it; the script never invents values.
 3. Waits for a `VALID` build of `X.Y.Z` (60 minutes by default,
@@ -282,7 +282,9 @@ ASC_KEY_ID=… ASC_ISSUER_ID=… ASC_KEY_P8=/path/to/AuthKey_….p8 \
 4. Sets What's New on every store locale: the summary, a blank line, then one
    `• entry` line per entry. Store locales map to the app's languages as
    `en-US`→`en`, `fr-FR`→`fr`, `es-ES`→`es`, and `ja`, `ko`, `zh-Hans`,
-   `zh-Hant`, `ru` as themselves. A store locale with no notes is an error.
+   `zh-Hant`, `ru` as themselves. A store locale with no mapping, or whose
+   language has no notes, gets the English notes, and the run log names it.
+   Missing English notes are an error.
 5. Submits: a `MAC_OS` review submission holding the version, then
    `submitted=true`.
 
