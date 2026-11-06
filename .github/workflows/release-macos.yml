@@ -1190,10 +1190,10 @@ jobs:
           # on a different line shape, `sha256 arm:`/`intel:` instead of one string — leaves the
           # file untouched, stages nothing, takes the "cask already at" branch below and records
           # outcome=published over a cask that still names the PREVIOUS version. That green run is
-          # a lie: it opens the site-dispatch gate, and since those changelog PRs auto-merge,
-          # www.dragonapp.com would advertise a version `brew upgrade` cannot install — the exact
-          # failure that gate exists to prevent, arriving through a different door. So read the
-          # file back and require both target lines before claiming anything.
+          # a lie: it opens the site-dispatch gate, and the site's refresh PR would then offer a
+          # version `brew upgrade` cannot install — the exact failure that gate exists to prevent,
+          # arriving through a different door. So read the file back and require both target lines
+          # before claiming anything.
           #
           # sha256 gets the same treatment as version, not because the same reformat could hide
           # from one pattern and not the other, but because a HALF-matched rewrite is its own
@@ -1262,9 +1262,9 @@ jobs:
       #
       # Gated on the cask step's own report, not merely on the release having got this far. The
       # cask bump exits 0 on three give-up paths, so a green run is not evidence Homebrew has
-      # this version — and the site's refresh no longer opens a PR anyone reads, it auto-merges.
-      # An unshipped cask plus a refreshed page is a download button for a version brew cannot
-      # install. Equality against 'published', not `!= 'gave-up'`: an unset output is empty,
+      # this version — and the site's refresh PR, once someone merges it, puts a download button
+      # on the page for whatever it names, with nothing checking Homebrew first. An unshipped cask
+      # plus a refreshed page is a download button for a version brew cannot install. Equality against 'published', not `!= 'gave-up'`: an unset output is empty,
       # which would pass the negative form.
       - name: Ask the marketing site to refresh its changelog
         if: ${{ !inputs.verify_only && steps.cask.outputs.outcome == 'published' }}
