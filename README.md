@@ -83,13 +83,16 @@ The gate has no opt-out input. A failed gate publishes nothing: fix the problem,
 pick a fresh version, push a fresh tag — never delete and re-push a release tag,
 because GitHub demotes the published Release to a draft whose asset 404s.
 
-## The What's New pane is the release notes (`v6.4.0`)
+## The What's New export (`v6.4.0`)
 
 The gate proves the notes were updated. `scripts/whats-new-export.py` reads them.
 It runs immediately after the gate — before the certificate import, so a bad
 export costs nothing — and produces two things:
 
-1. **The GitHub Release body.** Previously `gh release create --generate-notes`,
+1. **The GitHub Release body.** Since `v6.9.0` the next step replaces it with the
+   version's `CHANGELOG.md` entry
+   ([below](#the-release-body-is-the-changelogmd-entry)); the pane's body stays only
+   in a repo with no `CHANGELOG.md`. Previously `gh release create --generate-notes`,
    i.e. GitHub's summary of the PR titles since the previous tag, which is why
    every published body reads like `docs: realign RELEASING.md with the actual
    release workflow · release: 2.14.6 — …`. That is the commit log, not what the
@@ -247,13 +250,15 @@ to `https://github.com/`. It is never on a command line, in a remote URL or on d
 ## Marketing site dispatch
 
 The last publishing step, `scripts/site-dispatch.sh`, asks www.dragonapp.com to
-refresh its changelog. A non-204 answer fails the step, and so does a 204 after
-which no `repository_dispatch` run appears on the site within 60 seconds (checked
-through the site repo's public Actions API). Either failure prints `::error::` and
-writes it to the run summary. It used to be a warning on a green step, and Spectacle
-2 v2.7.0 and v2.8.0 both got HTTP 403 there unnoticed. The Release, the appcast and
-the cask are already published when it runs, so a red run here never half-ships a
-release. An unset token and an app with no page on the site still skip, as before.
+refresh its changelog. The site answers with a pull request, and merging it is a
+separate marketing-site update, not part of the release. A non-204 answer fails
+the step, and so does a 204 after which no `repository_dispatch` run appears on
+the site within 60 seconds (checked through the site repo's public Actions API).
+Either failure prints `::error::` and writes it to the run summary. It used to be
+a warning on a green step, and Spectacle 2 v2.7.0 and v2.8.0 both got HTTP 403
+there unnoticed. The Release, the appcast and the cask are already published when
+it runs, so a red run here never half-ships a release. An unset token and an app
+with no page on the site still skip, as before.
 
 ## App Store submission (`scripts/asc-submit.py`)
 
