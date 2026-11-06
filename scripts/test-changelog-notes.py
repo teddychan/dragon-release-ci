@@ -4,7 +4,7 @@
 Fixtures are real entries from the five apps' CHANGELOG.md files, one per heading style:
 `## [2.8.0] - date` under a file intro (spectacle-2), `## 2.22.0 (date)` and `## 2.21.2 — date`
 (clipmenu-2), `## 2.16.3 - date` (ice-2) and a bare `## 2.17.0` (yahoo-keykey-2).
-dragon-sample-app has no CHANGELOG.md.
+dragon-sample-app uses spectacle-2's style.
 
 Run: python3 scripts/test-changelog-notes.py
 """
@@ -269,7 +269,7 @@ def main():
           rc == 1 and body is None, f"rc={rc}\n{log}\n{body}")
 
     rc, body, log = run(None, "1.1.0")
-    check("no CHANGELOG.md (dragon-sample-app) keeps the What's New body, with a notice",
+    check("no CHANGELOG.md keeps the What's New body, with a notice",
           rc == 0 and body == WHATS_NEW_BODY and "::notice::" in log, f"rc={rc}\n{log}\n{body}")
 
     rc, body, log = run("# Changelog\n\n## 0.9.0\n\n- Older.\n", "")
