@@ -547,9 +547,9 @@ def check_cask_gates_the_site_dispatch(steps):
     because that is what the failure is. The cask step has three green give-up paths — no token,
     the Release asset not live yet, the tap not clonable — each a `::warning::` and an `exit 0`.
     The site dispatch then ran regardless, so www.dragonapp.com would advertise a version
-    `brew upgrade` could not install. That used to be caught downstream: the site's refresh
-    opened a PR a human read before merging. It now auto-merges, so between this step and the
-    published page there is nothing that looks at the diff. The condition IS the reviewer.
+    `brew upgrade` could not install. The site's refresh PR now waits for a person to merge it
+    (www.dragonapp.com#119), but nothing makes that person check Homebrew first, so the
+    condition stays the first line of defence.
 
     Deny-by-default like the rest of the file, and fail-CLOSED specifically. The comparison is
     pinned to equality against a success value the step can actually emit, not to `!= 'gave-up'`:
