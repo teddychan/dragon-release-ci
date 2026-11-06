@@ -15,9 +15,9 @@ whats-new.json is unchanged and still comes from the pane; only the Release body
   - Appends the `**Full Changelog**` line from the What's New exporter's body, so the compare link
     has one author.
 
-A repo with no CHANGELOG.md (dragon-sample-app) keeps the What's New body, and so does a
-verification run with no tag, where VERSION is empty and nothing is published. A CHANGELOG.md
-with no entry for VERSION fails: that is a release whose notes were never written.
+A repo with no CHANGELOG.md keeps the What's New body, and so does a verification run with no
+tag, where VERSION is empty and nothing is published. A CHANGELOG.md with no entry for VERSION
+fails: that is a release whose notes were never written.
 
 Run: python3 scripts/changelog-notes.py --changelog CHANGELOG.md --version 2.8.0 \
        --whats-new-body release-notes.md --out release-notes-changelog.md

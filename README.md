@@ -184,9 +184,9 @@ and `2.8.0` never matches `2.8.01` or `12.8.0`. The exporter's `**Full Changelog
 link is appended unchanged.
 
 `whats-new.json` still comes from the pane; only the body moved. A repo with no
-`CHANGELOG.md` (dragon-sample-app) keeps the pane's body, with a notice, and so does
-a verification run with no tag. A `CHANGELOG.md` with no entry for the version
-fails the run before anything is signed.
+`CHANGELOG.md` keeps the pane's body, with a notice, and so does a verification run
+with no tag. A `CHANGELOG.md` with no entry for the version fails the run before
+anything is signed.
 
 ## Verification-only runs
 
